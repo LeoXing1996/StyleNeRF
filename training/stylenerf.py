@@ -28,16 +28,16 @@ from einops import repeat, rearrange
 # --------------------------------- basic modules ------------------------------------------- #
 @persistence.persistent_class
 class Style2Layer(nn.Module):
-    def __init__(self, 
-        in_channels, 
-        out_channels, 
-        w_dim, 
-        activation='lrelu', 
+    def __init__(self,
+        in_channels,
+        out_channels,
+        w_dim,
+        activation='lrelu',
         resample_filter=[1,3,3,1],
         magnitude_ema_beta = -1,           # -1 means not using magnitude ema
         **unused_kwargs):
 
-        # simplified version of SynthesisLayer 
+        # simplified version of SynthesisLayer
         # no noise, kernel size forced to be 1x1, used in NeRF block
         super().__init__()
         self.activation = activation
@@ -55,7 +55,7 @@ class Style2Layer(nn.Module):
             self.weight = torch.nn.Parameter(
                torch.randn([out_channels, in_channels, 1, 1]).to(memory_format=memory_format))
             self.bias = torch.nn.Parameter(torch.zeros([out_channels]))
-        
+
         else:
             self.weight = torch.nn.Parameter(torch.Tensor(out_channels, in_channels))
             self.bias = torch.nn.Parameter(torch.Tensor(out_channels))
@@ -91,20 +91,20 @@ class Style2Layer(nn.Module):
         if fused_modconv is None:
             with misc.suppress_tracer_warnings(): # this value will be treated as a constant
                 fused_modconv = not self.training
-        
+
         if self.w_dim > 0:           # modulated convolution
             assert x.ndim == 4,  "currently not support modulated MLP"
             styles = self.affine(w)      # Batch x style_dim
             if x.size(0) > styles.size(0):
                 styles = repeat(styles, 'b c -> (b s) c', s=x.size(0) // styles.size(0))
-            
+
             x = modulated_conv2d(x=x, weight=self.weight, styles=styles, noise=None, up=up,
-                padding=self.padding, resample_filter=self.resample_filter, 
+                padding=self.padding, resample_filter=self.resample_filter,
                 flip_weight=flip_weight, fused_modconv=fused_modconv)
             act_gain = self.act_gain * gain
             act_clamp = self.conv_clamp * gain if self.conv_clamp is not None else None
             x = bias_act.bias_act(x, self.bias.to(x.dtype), act=act, gain=act_gain, clamp=act_clamp)
-        
+
         else:
             if x.ndim == 2:  # MLP mode
                 x = F.relu(F.linear(x, self.weight, self.bias.to(x.dtype)))
@@ -154,7 +154,7 @@ class SDFDensityLaplace(nn.Module):  # alpha * Laplace(loc=0, scale=beta).cdf(-s
 
 @persistence.persistent_class
 class NeRFBlock(nn.Module):
-    ''' 
+    '''
     Predicts volume density and color from 3D location, viewing
     direction, and latent code z.
     '''
@@ -174,16 +174,16 @@ class NeRFBlock(nn.Module):
 
     # architecture settings
     activation           = 'lrelu'
-    use_skip             = False 
+    use_skip             = False
     use_viewdirs         = False
     add_rgb              = False
     predict_rgb          = False
     inverse_sphere       = False
     merge_sigma_feat     = False   # use one MLP for sigma and features
     no_sigma             = False   # do not predict sigma, only output features
-    
+
     tcnn_backend         = False
-    use_style            = None 
+    use_style            = None
     use_normal           = False
     use_sdf              = None
     volsdf_exp_beta      = False
@@ -195,8 +195,8 @@ class NeRFBlock(nn.Module):
     n_freq_posenc        = 10
     n_freq_posenc_views  = 4
     downscale_p_by       = 1
-    gauss_dim_pos        = 20 
-    gauss_dim_view       = 4 
+    gauss_dim_pos        = 20
+    gauss_dim_view       = 4
     gauss_std            = 10.
     positional_encoding  = "normal"
 
@@ -210,8 +210,8 @@ class NeRFBlock(nn.Module):
         self.use_sdf  = self.use_sdf is not None
         if self.use_sdf == 'volsdf':
             self.density_transform = SDFDensityLaplace(
-                params_init={'beta': 0.1}, 
-                beta_min=0.0001, 
+                params_init={'beta': 0.1},
+                beta_min=0.0001,
                 exp_beta=self.volsdf_exp_beta)
 
         # ----------- input module -------------------------
@@ -240,7 +240,7 @@ class NeRFBlock(nn.Module):
         assert not (self.add_rgb and self.predict_rgb), "only one could be achieved"
         assert not ((self.use_viewdirs or self.use_normal) and (self.merge_sigma_feat or self.no_sigma)), \
             "merged MLP does not support."
-        
+
         if self.disable_latents:
             w_dim = 0
         elif self.z_dim > 0:  # if input global latents, disable using style vectors
@@ -267,20 +267,20 @@ class NeRFBlock(nn.Module):
 
             assert self.merge_sigma_feat and (not self.predict_rgb) and (not self.add_rgb)
             assert w_dim == 0, "do not use any modulating inputs"
-            
+
             tcnn_config  = {"otype": "FullyFusedMLP", "activation": "ReLU", "output_activation": "None", "n_neurons": 64, "n_hidden_layers": 1}
             self.network = tcnn.Network(dim_embed, final_out_dim, tcnn_config)
             self.num_ws  = 0
-            
+
         else:
             self.fc_in  = Style2Layer(dim_embed, self.hidden_size, w_dim, activation=self.activation)
             self.num_ws = 1
-            self.skip_layer = self.n_blocks // 2 - 1 if self.use_skip else None      
+            self.skip_layer = self.n_blocks // 2 - 1 if self.use_skip else None
             if self.n_blocks > 1:
                 self.blocks = nn.ModuleList([
                     Style2Layer(
-                        self.hidden_size if i != self.skip_layer else self.hidden_size + dim_embed, 
-                        self.hidden_size, 
+                        self.hidden_size if i != self.skip_layer else self.hidden_size + dim_embed,
+                        self.hidden_size,
                         w_dim, activation=self.activation,
                         magnitude_ema_beta=self.magnitude_ema_beta)
                     for i in range(self.n_blocks - 1)])
@@ -293,19 +293,19 @@ class NeRFBlock(nn.Module):
             if (self.z_dim == 0 and (not self.disable_latents)):
                 self.num_ws += 1
             else:
-                self.num_ws = 0        
-            
+                self.num_ws = 0
+
             if self.use_viewdirs:
                 assert self.predict_rgb, "only works when predicting RGB"
                 self.from_ray = Conv2dLayer(dim_embed_view, final_out_dim, kernel_size=1, activation='linear')
-            
+
             if self.predict_rgb:   # predict RGB over features
                 self.to_rgb = Conv2dLayer(final_out_dim, self.img_channels * self.shuffle_factor, kernel_size=1, activation='linear')
-        
+
     def set_steps(self, steps):
         if hasattr(self, "steps"):
             self.steps.fill_(steps)
-        
+
     def transform_points(self, p, views=False):
         p = p / self.downscale_p_by
         if self.positional_encoding == 'gauss':
@@ -343,16 +343,16 @@ class NeRFBlock(nn.Module):
         elif impl == 'mlp':
             height, width, n_steps = 1, 1, p_in.shape[1]
         else:
-            raise NotImplementedError("looking for more efficient implementation.")        
+            raise NotImplementedError("looking for more efficient implementation.")
         p_in = rearrange(p_in, 'b (h w s) d -> (b s) d h w', h=height, w=width, s=n_steps)
         use_normal = self.use_normal or self.use_sdf
         if use_normal:
             p_in.requires_grad_(True)
         return (height, width, n_steps, use_normal), p_in
-    
+
     def forward_nerf(self, option, p_in, ray_d=None, ws=None, z_shape=None, z_app=None):
         height, width, n_steps, use_normal = option
-        
+
         # forward nerf feature networks
         p = self.transform_points(p_in.permute(0,2,3,1))
         if (self.z_dim > 0) and (not self.disable_latents):
@@ -363,7 +363,7 @@ class NeRFBlock(nn.Module):
 
         if height == width == 1:  # MLP
             p = p.squeeze(-1).squeeze(-1)
-            
+
         net = self.fc_in(p, ws[:, 0] if ws is not None else None)
         if self.n_blocks > 1:
             for idx, layer in enumerate(self.blocks):
@@ -374,18 +374,18 @@ class NeRFBlock(nn.Module):
 
         # forward to get the final results
         w_idx = self.n_blocks  # fc_in, self.blocks
-                
+
         feat_inputs = [net]
         if not (self.merge_sigma_feat or self.no_sigma):
             ws_i      = ws[:, w_idx] if ws is not None else None
             sigma_out = self.sigma_out(net, ws_i)
             if use_normal:
                 gradients, = grad(
-                    outputs=sigma_out, inputs=p_in, 
-                    grad_outputs=torch.ones_like(sigma_out, requires_grad=False), 
+                    outputs=sigma_out, inputs=p_in,
+                    grad_outputs=torch.ones_like(sigma_out, requires_grad=False),
                     retain_graph=True, create_graph=True, only_inputs=True)
                 feat_inputs.append(gradients)
-    
+
         ws_i = ws[:, -1] if ws is not None else None
         net = torch.cat(feat_inputs, 1) if len(feat_inputs) > 1 else net
         feat_out = self.feat_out(net, ws_i)  # this is used for lowres output
@@ -394,7 +394,7 @@ class NeRFBlock(nn.Module):
             sigma_out, feat_out = feat_out[:, :self.shuffle_factor], feat_out[:, self.shuffle_factor:]
         elif self.no_sigma:
             sigma_out = None
-                
+
         if self.predict_rgb:
             if self.use_viewdirs and ray_d is not None:
                 ray_d = ray_d / torch.norm(ray_d, dim=-1, keepdim=True)
@@ -408,7 +408,7 @@ class NeRFBlock(nn.Module):
                 rgb = self.to_rgb(feat_out)
 
             if self.final_sigmoid_act:
-                rgb = torch.sigmoid(rgb)    
+                rgb = torch.sigmoid(rgb)
             if self.normalized_feat:
                 feat_out = feat_out / (1e-7 + feat_out.norm(dim=-1, keepdim=True))
             feat_out = torch.cat([rgb, feat_out], 1)
@@ -430,7 +430,7 @@ class CameraGenerator(torch.nn.Module):
         self.affine1 = FullyConnectedLayer(in_dim, hi_dim, activation='lrelu')
         self.affine2 = FullyConnectedLayer(hi_dim, hi_dim, activation='lrelu')
         self.proj    = FullyConnectedLayer(hi_dim, out_dim)
-        
+
     def forward(self, x):
         cam = self.proj(self.affine2(self.affine1(x)))
         return cam
@@ -452,25 +452,25 @@ class CameraRay(object):
     dists_normalized = False    # use normalized interval instead of real dists
     random_rotate    = False
     ray_align_corner = True
-    
+
     nonparam_cameras = None
 
     def __init__(self, camera_kwargs, **other_kwargs):
         if len(camera_kwargs) == 0:  # for compitatbility of old checkpoints
-            camera_kwargs.update(other_kwargs)        
+            camera_kwargs.update(other_kwargs)
         for key in camera_kwargs:
             if hasattr(self, key):
                 setattr(self, key, camera_kwargs[key])
         self.camera_matrix = get_camera_mat(fov=self.fov)
 
     def prepare_pixels(self, img_res, tgt_res, vol_res, camera_matrices, theta, margin=0, **unused):
-        if self.ray_align_corner:    
+        if self.ray_align_corner:
             all_pixels = self.get_pixel_coords(img_res, camera_matrices, theta=theta)
             all_pixels = rearrange(all_pixels, 'b (h w) c -> b c h w', h=img_res, w=img_res)
             tgt_pixels = F.interpolate(all_pixels, size=(tgt_res, tgt_res), mode='nearest') if tgt_res < img_res else all_pixels.clone()
             vol_pixels = F.interpolate(tgt_pixels, size=(vol_res, vol_res), mode='nearest') if tgt_res > vol_res else tgt_pixels.clone()
             vol_pixels = rearrange(vol_pixels, 'b c h w -> b (h w) c')
-            
+
         else:  # coordinates not aligned!
             tgt_pixels = self.get_pixel_coords(tgt_res, camera_matrices, corner_aligned=False, theta=theta)
             vol_pixels = self.get_pixel_coords(vol_res, camera_matrices, corner_aligned=False, theta=theta, margin=margin) \
@@ -507,7 +507,7 @@ class CameraRay(object):
         camera_mat = camera_matrix.repeat(batch_size, 1, 1).to(device)
         reg_loss = None  # TODO: useless
 
-        if isinstance(mode, list):   
+        if isinstance(mode, list):
             # default camera generator, we assume input mode is linear
             if len(mode) == 3:
                 val_u, val_v, val_r = mode
@@ -517,35 +517,35 @@ class CameraRay(object):
                 val_u, val_v, val_r, r_s = mode
                 r0 = self.range_radius[0] * r_s
                 r1 = self.range_radius[1] * r_s
-            
+
             world_mat = get_camera_pose(
-                self.range_u, self.range_v, [r0, r1], 
-                val_u, val_v, val_r, 
-                batch_size=batch_size, 
+                self.range_u, self.range_v, [r0, r1],
+                val_u, val_v, val_r,
+                batch_size=batch_size,
                 gaussian=False,   # input mode is by default uniform
                 angular=self.angular_camera).to(device)
-        
-        elif isinstance(mode, torch.Tensor):    
+
+        elif isinstance(mode, torch.Tensor):
             world_mat, mode = get_camera_pose_v2(
-                self.range_u, self.range_v, self.range_radius, mode, 
-                gaussian=self.gaussian_camera and (not force_uniform), 
+                self.range_u, self.range_v, self.range_radius, mode,
+                gaussian=self.gaussian_camera and (not force_uniform),
                 angular=self.angular_camera)
             world_mat = world_mat.to(device)
             mode = torch.stack(mode, 1).to(device)
-        
+
         else:
             world_mat, mode = get_random_pose(
-                self.range_u, self.range_v, 
+                self.range_u, self.range_v,
                 self.range_radius, batch_size,
-                gaussian=self.gaussian_camera, 
-                angular=self.angular_camera)            
+                gaussian=self.gaussian_camera,
+                angular=self.angular_camera)
             world_mat = world_mat.to(device)
             mode = torch.stack(mode, 1).to(device)
         return camera_mat.float(), world_mat.float(), mode, reg_loss
 
     def get_transformed_depth(self, di, reversed=False):
         depth_range = self.depth_range
-        
+
         if (self.depth_transform is None) or (self.depth_transform == 'None'):
             g_fwd, g_inv = lambda x: x, lambda x: x
         elif self.depth_transform == 'LogWarp':
@@ -558,9 +558,9 @@ class CameraRay(object):
         if not reversed:
             return g_inv(g_fwd(depth_range[1]) * di + g_fwd(depth_range[0]) * (1 - di))
         else:
-            d0 = (g_fwd(di) - g_fwd(depth_range[0])) / (g_fwd(depth_range[1]) - g_fwd(depth_range[0])) 
+            d0 = (g_fwd(di) - g_fwd(depth_range[0])) / (g_fwd(depth_range[1]) - g_fwd(depth_range[0]))
             return d0.clip(min=0, max=1)
-    
+
     def get_evaluation_points(self, pixels_world=None, camera_world=None, di=None, p_i=None, no_reshape=False, transform=None):
         if p_i is None:
             batch_size = pixels_world.shape[0]
@@ -580,13 +580,13 @@ class CameraRay(object):
             c = torch.tensor([1., 0., 0.]).to(p_i.device)
             p_i = normalization_inverse_sqrt_dist_centered(
                 p_i, c[None, None, None, :], self.depth_range[1])
-        
+
         elif transform == 'InverseWarp':
             # https://arxiv.org/pdf/2111.12077.pdf
             p_n = p_i.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-7)
             con = p_n.ge(1).type_as(p_n)
             p_i = p_i * (1 -con) + (2 - 1 / p_n) * (p_i / p_n) * con
-            
+
         if no_reshape:
             return p_i
 
@@ -601,7 +601,7 @@ class CameraRay(object):
         n_pixels   = pixels_world.shape[1]
         ray_world  = pixels_world - camera_world
         ray_world  = ray_world / ray_world.norm(dim=-1, keepdim=True)  # normalize
-        
+
         camera_world = camera_world.unsqueeze(-2).expand(batch_size, n_pixels, n_steps, 3)
         ray_world = ray_world.unsqueeze(-2).expand(batch_size, n_pixels, n_steps, 3)
         bg_pts, _ = depth2pts_outside(camera_world, ray_world, di)    # di: 1 ---> 0
@@ -628,7 +628,7 @@ class CameraRay(object):
 
         if last_dist > 0:
             alpha[..., -1] = 1
-            
+
         # alpha = 1.-torch.exp(-sigma * dists)
         T = torch.cumprod(torch.cat([
                 torch.ones_like(alpha[:, :, :1]),
@@ -640,7 +640,7 @@ class CameraRay(object):
         device     = camera_matrices[0].device
         batch_size = camera_matrices[0].shape[0]
         # margin = self.margin if margin is None else margin
-        full_pixels = arange_pixels((tgt_res, tgt_res), 
+        full_pixels = arange_pixels((tgt_res, tgt_res),
             batch_size, invert_y_axis=invert_y, margin=margin,
             corner_aligned=corner_aligned).to(device)
         if (theta is not None):
@@ -672,21 +672,21 @@ class VolumeRenderer(object):
     n_bg_samples      = 4
     n_final_samples   = None    # final nerf steps after upsampling (optional)
     sigma_type        = 'relu'
-    
+
     hierarchical      = True
     fine_only         = False
     no_background     = False
     white_background  = False
     mask_background   = False
     pre_volume_size   = None
-    
+
     bound             = None
     density_p_target  = 1.0
     tv_loss_weight    = 0.0     # for now only works for density-based voxels
 
     def __init__(self, renderer_kwargs, camera_ray, input_encoding=None, **other_kwargs):
         if len(renderer_kwargs) == 0:  # for compitatbility of old checkpoints
-            renderer_kwargs.update(other_kwargs)        
+            renderer_kwargs.update(other_kwargs)
         for key in renderer_kwargs:
             if hasattr(self, key):
                 setattr(self, key, renderer_kwargs[key])
@@ -724,13 +724,13 @@ class VolumeRenderer(object):
         else:
             sigma = sigma_raw
         return sigma
-    
+
     def forward_hierarchical_sampling(self, di, weights, n_steps, det=False):
         di_mid = 0.5 * (di[..., :-1] + di[..., 1:])
         n_bins = di_mid.size(-1)
         batch_size = di.size(0)
         di_fine = sample_pdf(
-            di_mid.reshape(-1, n_bins), 
+            di_mid.reshape(-1, n_bins),
             weights.reshape(-1, n_bins+1)[:, 1:-1],
             n_steps, det=det).reshape(batch_size, -1, n_steps)
         return di_fine
@@ -751,11 +751,11 @@ class VolumeRenderer(object):
         p_i, r_i = self.C.get_evaluation_points(pixels_world, camera_world, di_trs)
 
         # query the density grids and compute the mask and indices
-        pre_sigma_raw = self.I.query_input_features(p_i, ('volume', nerf_input_feats[3]), fg_shape, bound) 
+        pre_sigma_raw = self.I.query_input_features(p_i, ('volume', nerf_input_feats[3]), fg_shape, bound)
         pre_sigma     = self.get_density(rearrange(pre_sigma_raw, 'b (n s) () -> b n s', s=H.n_steps), fg_nerf, training=H.training)
         pre_weights   = self.C.calc_volume_weights(pre_sigma, di if self.C.dists_normalized else di_trs, ray_vector, last_dist=1e10)[0]
-        pre_p_target  = 1.0 if H.alpha <= 0 else 1.0 - (1.0 - self.density_p_target) * H.alpha 
-        
+        pre_p_target  = 1.0 if H.alpha <= 0 else 1.0 - (1.0 - self.density_p_target) * H.alpha
+
         if self.tv_loss_weight > 0:
             voxel_density = nerf_input_feats[3][:, 0]
             tv_loss = torch.mean(torch.sqrt(1e-7 +
@@ -766,51 +766,51 @@ class VolumeRenderer(object):
 
         if pre_p_target < 1:  # use density grid to prune samples
             pre_topp_mask = rearrange(topp_masking(pre_weights, pre_p_target), 'b n s -> b (n s)')
-            pre_topp_asgn = repeat(torch.arange(H.n_points * H.batch_size, device=p_i.device), 
+            pre_topp_asgn = repeat(torch.arange(H.n_points * H.batch_size, device=p_i.device),
                 '(b n) -> b (n s)', b=H.batch_size, n=H.n_points, s=H.n_steps)[pre_topp_mask]
             pre_topp_lens = pre_topp_mask.sum(-1).cpu().tolist()
             pre_weights   = rearrange(pre_weights, 'b n s -> b (n s)')
             pre_topp_wgts = pre_weights[pre_topp_mask]
             pre_topp_maxl = int(np.ceil(max(pre_topp_lens) / 512) * 512)  # just for convinenet
             pre_topp_asg2 = torch.cat([
-                torch.arange(pre_topp_lens[b], device=p_i.device) + 
+                torch.arange(pre_topp_lens[b], device=p_i.device) +
                 pre_topp_maxl * b for b in range(H.batch_size)])
-            
+
             # prune the samples based on masks, move to 2D for style-based generation
             filtered_pi   = p_i[pre_topp_mask]
             filtered_pi_b = torch.scatter(
                 filtered_pi.new_zeros(H.batch_size * pre_topp_maxl, 3), 0,
                 repeat(pre_topp_asg2, 'n -> n s', s=3), filtered_pi).reshape(H.batch_size, -1, 3)
             fg_shape = [H.batch_size, pre_topp_maxl // 512, 512, 1]
-            
+
             # forward nerf (with tri-plane features) with pruned points
             filtered_pi_b   = self.I.query_input_features(filtered_pi_b, nerf_input_feats, fg_shape, bound)
             filtered_feat_b = fg_nerf(filtered_pi_b, r_i, z_shape_obj, z_app_obj, ws=styles, shape=fg_shape, impl='mlp')[0]
 
             # get back to 1D
-            filtered_feat = torch.gather(filtered_feat_b.reshape(H.batch_size * pre_topp_maxl, -1), 0, 
+            filtered_feat = torch.gather(filtered_feat_b.reshape(H.batch_size * pre_topp_maxl, -1), 0,
                 repeat(pre_topp_asg2, 'n -> n s', s=filtered_feat_b.size(-1)))
             feat = torch.scatter_add(
-                filtered_feat.new_zeros(H.batch_size * H.n_points, filtered_feat.size(-1)), 0, 
+                filtered_feat.new_zeros(H.batch_size * H.n_points, filtered_feat.size(-1)), 0,
                 repeat(pre_topp_asgn, 'n -> n d', d=filtered_feat.size(-1)),
                 filtered_feat * pre_topp_wgts[:, None]).reshape(H.batch_size, H.n_points, -1)
             pre_weights_before = pre_weights.reshape(H.batch_size, -1, H.n_steps)
             pre_weights = torch.zeros_like(pre_weights).masked_scatter(
                 pre_topp_mask, pre_topp_wgts).reshape(H.batch_size, -1, H.n_steps)
-            
+
             # balancing and pass gradients?
             feat = feat / pre_weights.sum(dim=-1, keepdim=True) *  pre_weights_before.sum(dim=-1, keepdim=True)
-            
-        else:  
+
+        else:
             # normal NeRF forward, no pruning.
             p_i  = self.I.query_input_features(p_i, nerf_input_feats, fg_shape, bound)
             feat = fg_nerf(p_i, r_i, z_shape_obj, z_app_obj, ws=styles, shape=fg_shape)[0]
             feat = rearrange(feat, 'b (n s) d -> b n s d', s=H.n_steps)
             feat = torch.sum(pre_weights.unsqueeze(-1) * feat, dim=-2)
-        
+
         output.feat      += [feat]
         output.fg_weights = pre_weights
-        output.fg_depths  = (di, di_trs)  
+        output.fg_depths  = (di, di_trs)
         return output
 
     def forward_rendering(self, H, output, fg_nerf, nerf_input_cams, nerf_input_feats, latent_codes, styles):
@@ -829,12 +829,12 @@ class VolumeRenderer(object):
         p_i, r_i = self.C.get_evaluation_points(pixels_world, camera_world, di_trs)
 
         if nerf_input_feats is not None:
-            p_i = self.I.query_input_features(p_i, nerf_input_feats, fg_shape, bound)        
-        
+            p_i = self.I.query_input_features(p_i, nerf_input_feats, fg_shape, bound)
+
         feat, sigma_raw = fg_nerf(p_i, r_i, z_shape_obj, z_app_obj, ws=styles, shape=fg_shape)
         feat = rearrange(feat, 'b (n s) d -> b n s d', s=H.n_steps)
-        sigma_raw = rearrange(sigma_raw.squeeze(-1), 'b (n s) -> b n s', s=H.n_steps) 
-        sigma = self.get_density(sigma_raw, fg_nerf, training=H.training)         
+        sigma_raw = rearrange(sigma_raw.squeeze(-1), 'b (n s) -> b n s', s=H.n_steps)
+        sigma = self.get_density(sigma_raw, fg_nerf, training=H.training)
         fg_weights, bg_lambda = self.C.calc_volume_weights(
             sigma, di if self.C.dists_normalized else di_trs,  # use real dists for computing weights
             ray_vector, last_dist=0 if not H.fg_inf_depth else 1e10)[:2]
@@ -851,13 +851,13 @@ class VolumeRenderer(object):
             feat_f      = rearrange(feat_f, 'b (n s) d -> b n s d', s=H.n_steps)
             sigma_raw_f = rearrange(sigma_raw_f.squeeze(-1), 'b (n s) -> b n s', s=H.n_steps)
             sigma_f     = self.get_density(sigma_raw_f, fg_nerf, training=H.training)
-            
+
             feat      = torch.cat([feat_f, feat], 2)
             sigma     = torch.cat([sigma_f, sigma], 2)
             sigma_raw = torch.cat([sigma_raw_f, sigma_raw], 2)
             di        = torch.cat([di_fine, di], 2)
             di_trs    = torch.cat([di_trs_fine, di_trs], 2)
-            
+
             di, indices = torch.sort(di, dim=2)
             di_trs    = torch.gather(di_trs, 2, indices)
             sigma     = torch.gather(sigma, 2, indices)
@@ -865,11 +865,11 @@ class VolumeRenderer(object):
             feat      = torch.gather(feat, 2, repeat(indices, 'b n s -> b n s d', d=feat.size(-1)))
 
             fg_weights, bg_lambda = self.C.calc_volume_weights(
-                sigma, di if self.C.dists_normalized else di_trs,  # use real dists for computing weights, 
+                sigma, di if self.C.dists_normalized else di_trs,  # use real dists for computing weights,
                 ray_vector, last_dist=0 if not H.fg_inf_depth else 1e10)[:2]
 
         fg_feat = torch.sum(fg_weights.unsqueeze(-1) * feat, dim=-2)
-        
+
         output.feat       += [fg_feat]
         output.full_out   += [feat]
         output.fg_weights  = fg_weights
@@ -881,7 +881,7 @@ class VolumeRenderer(object):
         pixels_world, camera_world, _ = nerf_input_cams
         z_shape_bg, z_app_bg = latent_codes[2:]
         height, width = dividable(H.n_points)
-        bg_shape = [H.batch_size, height, width, H.n_bg_steps]            
+        bg_shape = [H.batch_size, height, width, H.n_bg_steps]
         if H.fixed_input_cams is not None:
             pixels_world, camera_world, _ = H.fixed_input_cams
 
@@ -898,7 +898,7 @@ class VolumeRenderer(object):
         sigma     = self.get_density(sigma_raw, bg_nerf, training=H.training)
         bg_weights = self.C.calc_volume_weights(sigma, di, None)[0]
         bg_feat = torch.sum(bg_weights.unsqueeze(-1) * feat, dim=-2)
-        
+
         if output.get('bg_lambda', None) is not None:
             bg_feat = output.bg_lambda.unsqueeze(-1) * bg_feat
         output.feat       += [bg_feat]
@@ -906,9 +906,9 @@ class VolumeRenderer(object):
         output.bg_weights  = bg_weights
         output.bg_depths   = di
         return output
-        
+
     def forward_volume_rendering(
-        self, 
+        self,
         nerf_modules,      # (fg_nerf, bg_nerf)
         camera_matrices,   # camera (K, RT)
         vol_pixels,
@@ -917,18 +917,18 @@ class VolumeRenderer(object):
         latent_codes           = None,
         styles                 = None,
         styles_bg              = None,
-        not_render_background  = False, 
+        not_render_background  = False,
         only_render_background = False,
 
         render_option          = None,
         return_full            = False,
-        
+
         alpha                  = 0,
         **unused):
 
         assert (latent_codes is not None) or (styles is not None)
         assert self.no_background or (nerf_input_feats is None), "input features do not support background field"
-        
+
         # hyper-parameters for rendering
         H      = EasyDict(**unused)
         output = EasyDict()
@@ -943,7 +943,7 @@ class VolumeRenderer(object):
 
         # prepare for rendering (parameters)
         fg_nerf, bg_nerf  = nerf_modules
-        
+
         H.training     = fg_nerf.training
         H.device       = camera_matrices[0].device
         H.batch_size   = camera_matrices[0].shape[0]
@@ -976,41 +976,41 @@ class VolumeRenderer(object):
             H.fixed_input_cams = self.C.get_origin_direction(pixels, fixed_camera)
         else:
             H.fixed_input_cams = None
-        
+
         H.fg_inf_depth = (self.no_background or not_render_background) and (not self.white_background)
         assert(not (not_render_background and only_render_background))
-        
+
         # volume rendering options: bg_weights, bg_lambda = None, None
         if (nerf_input_feats is not None) and \
             len(nerf_input_feats) == 4 and \
             nerf_input_feats[2] == 'volume' and \
-            H.fg_inf_depth:   
+            H.fg_inf_depth:
             # volume rendering with voxel-based density
             output = self.forward_rendering_with_grid(
                 H, output, fg_nerf, nerf_input_cams, nerf_input_feats, latent_codes, styles)
 
-        else: 
-            # standard volume rendering 
+        else:
+            # standard volume rendering
             if not only_render_background:
                 output = self.forward_rendering(
                     H, output, fg_nerf, nerf_input_cams, nerf_input_feats, latent_codes, styles)
-                
+
             # background rendering (NeRF++)
             if (not not_render_background) and (not self.no_background):
                 output = self.forward_rendering_background(
                     H, output, bg_nerf, nerf_input_cams, latent_codes, styles_bg)
-                         
+
         if ('early' in render_option) and ('value' not in render_option):
             return self.gen_optional_output(
                 H, fg_nerf, nerf_input_cams, nerf_input_feats, latent_codes, styles, output)
 
-        # ------------------------------------------- PREPARE FULL OUTPUT (NO 2D aggregation) -------------------------------------------- #        
+        # ------------------------------------------- PREPARE FULL OUTPUT (NO 2D aggregation) -------------------------------------------- #
         vol_len   = vol_pixels.size(1)
         feat_map  = sum(output.feat)
         full_x    = rearrange(feat_map[:, :vol_len], 'b (h w) d -> b d h w', h=H.tgt_res)
         split_rgb = fg_nerf.add_rgb or fg_nerf.predict_rgb
-        
-        full_out = self.split_feat(full_x, H.img_channels, None, split_rgb=split_rgb) 
+
+        full_out = self.split_feat(full_x, H.img_channels, None, split_rgb=split_rgb)
         if rand_pixels is not None:   # used in full supervision (debug later)
             if return_full:
                 assert (fg_nerf.predict_rgb or fg_nerf.add_rgb)
@@ -1021,15 +1021,15 @@ class VolumeRenderer(object):
                 full_weights = rearrange(full_weights, 'b (h w) s -> b s h w', h=H.rnd_res, w=H.rnd_res)
 
                 lh, lw = dividable(full_weights.size(1))
-                full_x = rearrange(torch.cat(rand_outputs, 2), 'b (h w) (l m) d -> b d (l h) (m w)', 
+                full_x = rearrange(torch.cat(rand_outputs, 2), 'b (h w) (l m) d -> b d (l h) (m w)',
                                    h=H.rnd_res, w=H.rnd_res, l=lh, m=lw)
                 full_x, full_img = self.split_feat(full_x, H.img_channels, split_rgb=split_rgb)
                 output.rand_out = (full_x, full_img, full_weights)
-            
+
             else:
                 rand_x = rearrange(feat_map[:, vol_len:], 'b (h w) d -> b d h w', h=H.rnd_res)
                 output.rand_out = self.split_feat(rand_x, H.img_channels, split_rgb=split_rgb)
-        output.full_out = full_out            
+        output.full_out = full_out
         return output
 
     def post_process_outputs(self, outputs, freeze_nerf=False):
@@ -1045,7 +1045,7 @@ class VolumeRenderer(object):
         fg_depth_map = torch.sum(output.fg_weights * output.fg_depths[1], dim=-1, keepdim=True)
         img = camera_world[:, :1] + fg_depth_map * ray_vector
         img = img.permute(0,2,1).reshape(-1, 3, H.tgt_res, H.tgt_res)
-        
+
         if 'input_feats' in H.render_option:
             a, b = [r.split(':')[1:] for r in H.render_option.split(',') if r.startswith('input_feats')][0]
             a, b = int(a), int(b)
@@ -1082,8 +1082,8 @@ class VolumeRenderer(object):
                         if nerf_input_feats is not None else points
                     _, sigma_out = fg_nerf(inputs, None, ws=styles, shape=fg_shape, z_shape=z_shape_obj, z_app=z_app_obj, requires_grad=True)
                 gradients, = grad(
-                    outputs=sigma_out, inputs=points, 
-                    grad_outputs=torch.ones_like(sigma_out, requires_grad=False), 
+                    outputs=sigma_out, inputs=points,
+                    grad_outputs=torch.ones_like(sigma_out, requires_grad=False),
                     retain_graph=True, create_graph=True, only_inputs=True)
             gradients = rearrange(gradients, 'b (n s) d -> b n s d', s=output.fg_depths[1].size(-1))
             avg_grads = (gradients * output.fg_weights.unsqueeze(-1)).sum(-2)
@@ -1128,7 +1128,7 @@ class Upsampler(object):
             self.block_resolutions = [b for b in self.block_resolutions if b > self.in_res]
         else:
             self.block_resolutions = self.block_reses
-        
+
         if self.no_2d_renderer:
             self.block_resolutions = []
 
@@ -1141,29 +1141,29 @@ class Upsampler(object):
             if self.channel_dict is None:
                 channels_dict  = {res: min(channel_base // res, self.channel_max) for res in self.block_resolutions}
             else:
-                channels_dict  = self.channel_dict 
+                channels_dict  = self.channel_dict
 
             if self.out_channel_dict is not None:
                 img_channels   = self.out_channel_dict
             else:
                 img_channels   = {res: self.img_channels for res in self.block_resolutions}
-            
+
             for ir, res in enumerate(self.block_resolutions):
                 res_before   = self.block_resolutions[ir-1] if ir > 0 else self.in_res
                 in_channels  = channels_dict[res_before] if ir > 0 else input_dim
-                out_channels = channels_dict[res]                
+                out_channels = channels_dict[res]
                 use_fp16     = (res >= fp16_resolution) # TRY False
                 is_last      = (ir == (len(self.block_resolutions) - 1))
                 no_upsample  = (res == res_before)
                 block        = util.construct_class_by_name(
                     class_name=block_kwargs.get('block_name', "training.networks.SynthesisBlock"),
-                    in_channels=in_channels, 
-                    out_channels=out_channels, 
-                    w_dim=w_dim, 
+                    in_channels=in_channels,
+                    out_channels=out_channels,
+                    w_dim=w_dim,
                     resolution=res,
-                    img_channels=img_channels[res], 
-                    is_last=is_last, 
-                    use_fp16=use_fp16, 
+                    img_channels=img_channels[res],
+                    is_last=is_last,
+                    use_fp16=use_fp16,
                     disable_upsample=no_upsample,
                     block_id=ir,
                     **block_kwargs)
@@ -1198,8 +1198,8 @@ class Upsampler(object):
             block  = blocks[index_l]
             block_noise = block_kwargs['voxel_noise'][index_l] if "voxel_noise" in block_kwargs else None
             x, img  = block(
-                x, 
-                img if not self.no_residual_img else None, 
+                x,
+                img if not self.no_residual_img else None,
                 cur_ws,
                 block_noise=block_noise,
                 skip_up=skip_up,
@@ -1212,7 +1212,7 @@ class Upsampler(object):
 @persistence.persistent_class
 class NeRFInput(Upsampler):
     """ Instead of positional encoding, it learns additional features for each points.
-        However, it is important to normalize the input points 
+        However, it is important to normalize the input points
     """
     output_mode  = 'none'    # tri_plane_reshape, tri_plane_concat, single_plane
     input_mode   = 'random'  # coordinates
@@ -1233,7 +1233,7 @@ class NeRFInput(Upsampler):
     hash_dim_in  = 32
     hash_dim_mid = None
     hash_dim_out = 2
-    hash_n_layer = 4 
+    hash_n_layer = 4
     hash_mode    = 'fast_hash'  # grid_hash (like volumes)
 
     keep_posenc  = -1
@@ -1247,13 +1247,13 @@ class NeRFInput(Upsampler):
         kwargs_copy['use_noise'] = True
         kwargs_copy['architecture'] = self.architecture
         self._flag = 0
-        
+
         assert self.input_mode == 'random', \
             "currently only support normal StyleGAN2. in the future we may work on other inputs."
 
         # plane-based inputs with modulated 2D convolutions
         if self.output_mode   == 'tri_plane_reshape':
-            self.img_channels, in_channels, const = 3 * self.out_dim, 0, None        
+            self.img_channels, in_channels, const = 3 * self.out_dim, 0, None
         elif self.output_mode == 'tri_plane_concat':  # xy, xz and yz planes are not shared #
             self.img_channels, in_channels = self.out_dim, self.channel_max
             const = torch.nn.Parameter(torch.randn([3, in_channels, self.in_res, self.in_res]))
@@ -1263,12 +1263,12 @@ class NeRFInput(Upsampler):
         elif self.output_mode == 'multi_planes':
             self.img_channels, in_channels, const = self.out_dim * self.split_size, 0, None
             kwargs_copy['architecture'] = 'orig'
-        
+
         # volume-based inputs with modulated 3D convolutions
         elif self.output_mode == '3d_volume':  # use 3D convolution to generate
             kwargs_copy['architecture'] = 'orig'
             kwargs_copy['mode'] = '3d'
-            self.img_channels, in_channels, const = self.out_dim, 0, None        
+            self.img_channels, in_channels, const = self.out_dim, 0, None
         elif self.output_mode == 'ms_volume':  # multi-resolution voulume, between hashtable and volumes
             kwargs_copy['architecture'] = 'orig'
             kwargs_copy['mode'] = '3d'
@@ -1281,7 +1281,7 @@ class NeRFInput(Upsampler):
             kwargs_copy['hash_size'], self._flag = 2 ** self.hash_size, 1
             assert self.hash_dim_out * self.hash_level == self.out_dim, "size must matched"
             return self.build_modulated_embedding(w_dim, **kwargs_copy)
-        
+
         elif self.output_mode == 'ms_nerf_hash':
             self.hash_mode, self._flag = 'grid_hash', 2
             ms_nerf = NeRFBlock({
@@ -1292,7 +1292,7 @@ class NeRFInput(Upsampler):
             })
             self.num_ws = ms_nerf.num_ws
             return [{'block': ms_nerf, 'num_ws': ms_nerf.num_ws, 'name': 'ms_nerf'}]
-            
+
         else:
             raise NotImplementedError
 
@@ -1316,7 +1316,7 @@ class NeRFInput(Upsampler):
                 x, img  = blocks[index_l](x, img, cur_ws, **block_kwargs)
             return img
 
-        def _forward_ffn_networks(x, blocks, block_ws):  
+        def _forward_ffn_networks(x, blocks, block_ws):
             #TODO: FFN is implemented as 1x1 conv for now #
             h, w = dividable(x.size(0))
             x = repeat(x, 'n d -> b n d', b=batch_size)
@@ -1353,7 +1353,7 @@ class NeRFInput(Upsampler):
         elif self.output_mode == 'ms_volume':
             img = _forward_conv_networks(x, img, blocks, block_ws)
             out = ('ms_volume', rearrange(img, 'b (l m) d h w -> b l m d h w', l=self.hash_level))
-            
+
         # hash-table outputs (need hash sample implemented #TODO#
         elif self.output_mode == 'hash_table':
             x, blocks = blocks[-1], blocks[:-1]
@@ -1370,23 +1370,23 @@ class NeRFInput(Upsampler):
             x = blocks[0](x, None, ws=block_ws, shape=[block_ws.size(0), 32, 32, 32])[0]
             x = rearrange(x, 'b (d h w) (l m) -> b l m d h w', l=self.hash_level, d=32, h=32, w=32)
             out = ('ms_volume', x)
-            
+
         else:
             raise NotImplementedError
 
         return out
 
     def query_input_features(self, p_i, input_feats, p_shape, bound, grad_inputs=False):
-        batch_size, height, width, n_steps = p_shape        
+        batch_size, height, width, n_steps = p_shape
         p_i = p_i / bound
-        
+
         if input_feats[0] == 'tri_plane':
             # TODO!! Our world space, x->depth, y->width, z->height
             lh, lw = dividable(n_steps)
             p_ds = rearrange(p_i, 'b (h w l m) d -> b (l h) (m w) d',
                 b=batch_size, h=height, w=width, l=lh, m=lw).split(1, dim=-1)
             px, py, pz = p_ds[0], p_ds[1], p_ds[2]
-            
+
             # HACK here
             if len(input_feats) == 4:  pz = -pz
 
@@ -1400,7 +1400,7 @@ class NeRFInput(Upsampler):
             p_f  = grid_sample(f_in, p_gs)  # gradient-fix bilinear interpolation
             p_f  = sum(p_f[i * batch_size: (i+1) * batch_size] for i in range(3))
             p_f  = rearrange(p_f, 'b d (l h) (m w) -> b (h w l m) d', l=lh, m=lw)
-        
+
         elif input_feats[0] == 'volume':
             # TODO!! Our world space, x->depth, y->width, z->height
             # (width-c, height-c, depth-c), volume (B x N x D x H x W)
@@ -1434,18 +1434,18 @@ class NeRFInput(Upsampler):
             p_yzx = ((p_yzx + 1) / 2).clamp(min=0, max=1)     # normalize to 0~1 (just for safe)
             p_yzx = torch.stack([p_yzx if n < v_size else torch.fmod(p_yzx * n, v_size) / v_size for n in hash_res_ls], 1)
             p_yzx = (p_yzx * 2 - 1).view(-1, n_steps, height, width, 3)
-            
+
             ms_v  = ms_v.view(-1, self.hash_dim_out, v_size, v_size, v_size)  # back to -1~1
             p_f   = F.grid_sample(ms_v, p_yzx, mode='bilinear', align_corners=False)
             p_f   = rearrange(p_f, '(b l) c s h w -> b (h w s) (l c)', l=self.hash_level)
-        
+
         elif input_feats[0] == 'hash_table':
             # TODO:!! Experimental code trying to learn hashtable used in (maybe buggy)
             # https://nvlabs.github.io/instant-ngp/assets/mueller2022instant.pdf
-            
+
             p_xyz = ((p_i + 1) / 2).clamp(min=0, max=1)  # normalize to 0~1
             p_f = hash_sample(
-                p_xyz, input_feats[1], self.offsets.to(p_xyz.device), 
+                p_xyz, input_feats[1], self.offsets.to(p_xyz.device),
                 self.beta, self.hash_n_min, grad_inputs, mode=self.hash_mode)
 
         else:
@@ -1456,7 +1456,7 @@ class NeRFInput(Upsampler):
                 p_f = torch.cat([p_f, positional_encoding(p_i, self.keep_posenc, use_pos=True)], -1)
             else:
                 p_f = torch.cat([p_f, p_i], -1)
-            
+
         return p_f
 
     def build_hashtable_info(self, hash_size):
@@ -1488,14 +1488,14 @@ class NeRFInput(Upsampler):
                     'block': Style2Layer(input_dim, output_dim, w_dim),
                     'num_ws': 1, 'name': f'hmlp{l}'
                 })
-                input_dim  = output_dim 
+                input_dim  = output_dim
             hash_networks.append({
                 'block': ToRGBLayer(input_dim, self.hash_dim_out, w_dim, kernel_size=1),
                 'num_ws': 1, 'name': 'hmlpout'})
         hash_networks.append({'block': hash_const, 'num_ws': 0, 'name': 'hash_const'})
         self.num_ws = sum([h['num_ws'] for h in hash_networks])
         return hash_networks
-        
+
 
 @persistence.persistent_class
 class NeRFSynthesisNetwork(torch.nn.Module):
@@ -1526,11 +1526,11 @@ class NeRFSynthesisNetwork(torch.nn.Module):
         interp_steps      = None,   # (optional) "start_step:final_step"
 
         # others (regularization)
-        regularization    = [],     # nv_beta, nv_vol 
+        regularization    = [],     # nv_beta, nv_vol
         predict_camera    = False,
         n_reg_samples     = 0,
         reg_full          = False,
-        
+
         cam_based_sampler = False,
         rectangular       = None,
         freeze_nerf       = False,
@@ -1552,16 +1552,16 @@ class NeRFSynthesisNetwork(torch.nn.Module):
         self.resolution_start = resolution_start if resolution_start is not None else resolution_vol
         self.img_resolution_log2 = int(np.log2(img_resolution))
         self.img_channels     = img_channels
-        
+
         # number of samples
         self.n_reg_samples = n_reg_samples
         self.reg_full = reg_full
         self.use_noise = block_kwargs.get('use_noise', False)
-        
+
         # ---------------------------------- Initialize Modules ---------------------------------------- -#
         # camera module
         self.C = CameraRay(camera_kwargs, **block_kwargs)
-        
+
         # input encoding module
         if (len(input_kwargs) > 0) and (input_kwargs['output_mode'] != 'none'):  # using synthezied inputs
             input_kwargs['channel_base'] = input_kwargs.get('channel_base', channel_base)
@@ -1576,9 +1576,9 @@ class NeRFSynthesisNetwork(torch.nn.Module):
         # upsampler module
         upsampler_kwargs.update(dict(
             img_channels=img_channels,
-            in_res=resolution_vol, 
-            out_res=img_resolution, 
-            channel_max=channel_max, 
+            in_res=resolution_vol,
+            out_res=img_resolution,
+            channel_max=channel_max,
             channel_base=channel_base))
         self.U = Upsampler(upsampler_kwargs, **block_kwargs)
 
@@ -1599,35 +1599,35 @@ class NeRFSynthesisNetwork(torch.nn.Module):
         self.margin           = block_kwargs.get('margin', 0)
         self.activation       = block_kwargs.get('activation', 'lrelu')
         self.rectangular_crop = rectangular  # [384, 512] ??
-    
+
         # nerf (foregournd/background)
         foreground_kwargs.update(dict(
-            z_dim=self.z_dim, 
-            w_dim=w_dim, 
+            z_dim=self.z_dim,
+            w_dim=w_dim,
             rgb_out_dim=self.rgb_out_dim,
             activation=self.activation))
 
         # disable positional encoding if input encoding is given
-        if self.I is not None:  
+        if self.I is not None:
             foreground_kwargs.update(dict(
-                disable_latents=(not self.I.keep_nerf_latents), 
-                input_dim=self.I.out_dim + 3 * (2 * self.I.keep_posenc + 1) 
+                disable_latents=(not self.I.keep_nerf_latents),
+                input_dim=self.I.out_dim + 3 * (2 * self.I.keep_posenc + 1)
                     if self.I.keep_posenc > -1 else self.I.out_dim,
                 positional_encoding='none'))
-        
+
         self.fg_nerf = NeRFBlock(foreground_kwargs)
         self.num_ws += self.fg_nerf.num_ws
 
         if not self.V.no_background:
             background_kwargs.update(dict(
-                z_dim=self.z_dim_bg, w_dim=w_dim, 
+                z_dim=self.z_dim_bg, w_dim=w_dim,
                 rgb_out_dim=self.rgb_out_dim_bg,
                 activation=self.activation))
             self.bg_nerf = NeRFBlock(background_kwargs)
             self.num_ws += self.bg_nerf.num_ws
         else:
             self.bg_nerf = None
-        
+
         # ---------------------------------- Build Networks ---------------------------------------- -#
         # input encoding (optional)
         if self.I is not None:
@@ -1637,7 +1637,7 @@ class NeRFSynthesisNetwork(torch.nn.Module):
             self.num_ws += sum([i['num_ws'] for i in nerf_inputs])
             for i in nerf_inputs:
                 setattr(self, 'in_' + i['name'], i['block'])
-                
+
         # upsampler
         upsamplers = self.U.build_network(w_dim, self.fg_nerf.rgb_out_dim, **block_kwargs)
         if len(upsamplers) > 0:
@@ -1649,7 +1649,7 @@ class NeRFSynthesisNetwork(torch.nn.Module):
         # data-sampler
         if cam_based_sampler:
             self.sampler = (CameraQueriedSampler, {'camera_module': self.C})
-            
+
         # other hyperameters
         self.progressive_growing   = progressive
         self.progressive_nerf_only = prog_nerf_only
@@ -1681,7 +1681,7 @@ class NeRFSynthesisNetwork(torch.nn.Module):
         batch_size = block_kwargs['batch_size'] = ws.size(0)
         n_levels, end_l, _, target_res = self.get_current_resolution()
 
-        # cameras, background codes        
+        # cameras, background codes
         if "camera_matrices" not in block_kwargs:
             if 'camera_mode' in block_kwargs:
                 block_kwargs["camera_matrices"] = self.get_camera(batch_size, device=ws.device, mode=block_kwargs["camera_mode"])
@@ -1696,9 +1696,9 @@ class NeRFSynthesisNetwork(torch.nn.Module):
                         pred_mode = self.camera_generator(rand_mode - 0.5)
                     mode = rand_mode if self.alpha <= 0 else rand_mode + pred_mode * 0.1
                     block_kwargs["camera_matrices"] = self.get_camera(batch_size, device=ws.device, mode=mode)
-                else:   
+                else:
                     block_kwargs["camera_matrices"] = self.get_camera(batch_size, device=ws.device)
-            
+
             if ('camera_RT' in block_kwargs) or ('camera_UV' in block_kwargs):
                 camera_matrices = list(block_kwargs["camera_matrices"])
                 camera_mask = torch.rand(batch_size).type_as(camera_matrices[1]).lt(self.alpha)
@@ -1707,7 +1707,7 @@ class NeRFSynthesisNetwork(torch.nn.Module):
                     camera_matrices[1][camera_mask] = image_RT[camera_mask]  # replacing with inferred cameras
                 else:  # sample uv instead of sampling the extrinsic matrix
                     image_UV = block_kwargs['camera_UV']
-                    image_RT = self.get_camera(batch_size, device=ws.device, mode=image_UV, force_uniform=True)[1]           
+                    image_RT = self.get_camera(batch_size, device=ws.device, mode=image_UV, force_uniform=True)[1]
                     camera_matrices[1][camera_mask] = image_RT[camera_mask]  # replacing with inferred cameras
                     camera_matrices[2][camera_mask] = image_UV[camera_mask]  # replacing with inferred uvs
                 block_kwargs["camera_matrices"] = tuple(camera_matrices)
@@ -1717,7 +1717,7 @@ class NeRFSynthesisNetwork(torch.nn.Module):
 
         # deal with roll in cameras
         block_kwargs['theta'] = self.C.get_roll(ws, self.training, **block_kwargs)
-        
+
         # generate features for input points (Optional, default not use)
         with torch.autograd.profiler.record_function('nerf_input_feats'):
             if self.I is not None:
@@ -1746,46 +1746,46 @@ class NeRFSynthesisNetwork(torch.nn.Module):
                 elif self.steps < self.interp_steps[1]:
                     nerf_resolution = (self.steps - self.interp_steps[0]) / (self.interp_steps[1] - self.interp_steps[0])
                     nerf_resolution = int(nerf_resolution * (vol_resolution / 2) + vol_resolution / 2)
-            
+
             vol_pixels, tgt_pixels = self.C.prepare_pixels(self.img_resolution, cur_resolution, nerf_resolution, **block_kwargs)
             if (end_l > 0) and (self.n_reg_samples > 0) and self.training:
                 rand_pixels, rand_indexs = self.C.prepare_pixels_regularization(tgt_pixels, self.n_reg_samples)
             else:
                 rand_pixels, rand_indexs = None, None
-                
+
             if self.fg_nerf.num_ws > 0:  # use style vector instead of latent codes?
                 block_kwargs["styles"] = ws[:, :self.fg_nerf.num_ws]
                 ws = ws[:, self.fg_nerf.num_ws:]
             if (self.bg_nerf is not None) and self.bg_nerf.num_ws > 0:
                 block_kwargs["styles_bg"] = ws[:, :self.bg_nerf.num_ws]
                 ws = ws[:, self.bg_nerf.num_ws:]
-        
+
         # volume rendering
         with torch.autograd.profiler.record_function('nerf'):
             if (rand_pixels is not None) and self.training:
                 vol_pixels = (vol_pixels, rand_pixels)
             outputs = self.V.forward_volume_rendering(
                 nerf_modules=(self.fg_nerf, self.bg_nerf),
-                vol_pixels=vol_pixels, 
+                vol_pixels=vol_pixels,
                 nerf_input_feats=nerf_input_feats,
                 return_full=self.reg_full,
                 alpha=self.alpha,
                 **block_kwargs)
-            
+
             reg_loss = outputs.get('reg_loss', {})
             x, img, _ = self.V.post_process_outputs(outputs['full_out'], self.freeze_nerf)
             if nerf_resolution < vol_resolution:
                 x   = F.interpolate(x,   vol_resolution, mode='bilinear', align_corners=False)
                 img = F.interpolate(img, vol_resolution, mode='bilinear', align_corners=False)
-            
+
             # early output from the network (used for visualization)
             if 'meshes' in block_kwargs:
                 from dnnlib.geometry import render_mesh
                 block_kwargs['voxel_noise'] = render_mesh(block_kwargs['meshes'], block_kwargs["camera_matrices"])
-            
+
             if (len(self.U.block_resolutions) == 0) or \
                 (x is None) or \
-                (block_kwargs.get("render_option", None) is not None and 
+                (block_kwargs.get("render_option", None) is not None and
                     'early' in block_kwargs['render_option']):
                 if 'value' in block_kwargs['render_option']:
                     img = x[:,:3]
@@ -1813,17 +1813,17 @@ class NeRFSynthesisNetwork(torch.nn.Module):
             with torch.autograd.profiler.record_function('upsampling'):
                 ws       = ws.to(torch.float32)
                 blocks   = [getattr(self, name) for name in self.block_names]
-                block_ws = self.U.forward_ws_split(ws, blocks)               
+                block_ws = self.U.forward_ws_split(ws, blocks)
                 imgs    += self.U.forward_network(blocks, block_ws, x, img, target_res, self.alpha, **block_kwargs)
                 img      = imgs[-1]
                 if len(rand_imgs) > 0:   # nerf path regularization
                     rand_imgs += self.U.forward_network(
                         blocks, block_ws, x_rand, img_rand, target_res, self.alpha, skip_up=True, **block_kwargs)
                     img_rand = rand_imgs[-1]
-            
+
             with torch.autograd.profiler.record_function('rgb_interp'):
                 if (self.alpha > -1) and (not self.progressive_nerf_only) and self.progressive_growing:
-                    if (self.alpha < 1) and (self.alpha > 0):     
+                    if (self.alpha < 1) and (self.alpha > 0):
                         alpha, _ = math.modf(self.alpha * n_levels)
                         img_nerf = imgs[-2]
                         if img_nerf.size(-1) < img.size(-1):  # need upsample image
@@ -1833,7 +1833,7 @@ class NeRFSynthesisNetwork(torch.nn.Module):
                             img_rand = rand_imgs[-2] * (1 - alpha) + img_rand * alpha
 
             with torch.autograd.profiler.record_function('nerf_path_reg_loss'):
-                if len(rand_imgs) > 0: # and self.training:  # random pixel regularization??            
+                if len(rand_imgs) > 0: # and self.training:  # random pixel regularization??
                     assert self.progressive_growing
                     if self.reg_full:     # aggregate RGB in the end.
                         lh, lw = img_rand.size(2) // self.n_reg_samples, img_rand.size(3) // self.n_reg_samples
@@ -1843,18 +1843,18 @@ class NeRFSynthesisNetwork(torch.nn.Module):
                             img_rand = img_rand + (1 - rand_probs.sum(1, keepdim=True))
                     rand_indexs = repeat(rand_indexs, 'b n -> b d n', d=img_rand.size(1))
                     img_ff = rearrange(rearrange(img, 'b d l h -> b d (l h)').gather(2, rand_indexs), 'b d (l h) -> b d l h', l=self.n_reg_samples)
-                
+
                     def l2(img_ff, img_nf):
                         batch_size = img_nf.size(0)
                         return ((img_ff - img_nf) ** 2).sum(1).reshape(batch_size, -1).mean(-1, keepdim=True)
-                    
+
                     reg_loss['reg_loss'] = l2(img_ff, img_rand) * 2.0
 
         if len(reg_loss) > 0:
             for key in reg_loss:
                 block_kwargs[key] = reg_loss[key]
-        
-        if self.rectangular_crop is not None:   # in case rectangular 
+
+        if self.rectangular_crop is not None:   # in case rectangular
             h, w = self.rectangular_crop
             c = int(img.size(-1) * (1 - h / w) / 2)
             mask = torch.ones_like(img)
@@ -1911,17 +1911,17 @@ class Discriminator(torch.nn.Module):
         conv_clamp          = None,     # Clamp the output of convolution layers to +-X, None = disable clamping.
         cmap_dim            = None,     # Dimensionality of mapped conditioning label, None = default.
         lowres_head         = None,     # add a low-resolution discriminator head
-        dual_discriminator  = False,    # add low-resolution (NeRF) image 
+        dual_discriminator  = False,    # add low-resolution (NeRF) image
         dual_input_ratio    = None,     # optional another low-res image input, which will be interpolated to the main input
         block_kwargs        = {},       # Arguments for DiscriminatorBlock.
         mapping_kwargs      = {},       # Arguments for MappingNetwork.
         epilogue_kwargs     = {},       # Arguments for DiscriminatorEpilogue.
         upsample_type       = 'default',
-        
+
         progressive         = False,
         resize_real_early   = False,    # Peform resizing before the training loop
         enable_ema          = False,    # Additionally save an EMA checkpoint
-        
+
         predict_camera      = False,    # Learn camera predictor as InfoGAN
         predict_9d_camera   = False,    # Use 9D camera distribution
         predict_3d_camera   = False,    # Use 3D camera (u, v, r), assuming camera is on the unit sphere
@@ -1957,11 +1957,11 @@ class Discriminator(torch.nn.Module):
         channel_base = int(channel_base * 32768)
         channels_dict = {res: min(channel_base // res, channel_max) for res in self.block_resolutions + [4]}
         fp16_resolution = max(2 ** (self.img_resolution_log2 + 1 - num_fp16_res), 8)
-        
+
         # camera prediction module
         self.c_dim = c_dim
         if predict_camera:
-            if not self.no_camera_condition:  
+            if not self.no_camera_condition:
                 if self.predict_3d_camera:
                     self.c_dim = out_dim = 3     # (u, v) on the sphere
                 else:
@@ -1969,18 +1969,18 @@ class Discriminator(torch.nn.Module):
                     if self.predict_9d_camera:
                         out_dim = 9
                     else:
-                        out_dim = 16            
+                        out_dim = 16
             self.projector = EqualConv2d(channels_dict[4], out_dim, 4, padding=0, bias=False)
-                  
+
         if cmap_dim is None:
             cmap_dim = channels_dict[4]
         if self.c_dim == 0:
             cmap_dim = 0
         if self.c_dim > 0:
             self.mapping = MappingNetwork(z_dim=0, c_dim=self.c_dim, w_dim=cmap_dim, num_ws=None, w_avg_beta=None, **mapping_kwargs)
-            
+
         # main discriminator blocks
-        common_kwargs = dict(img_channels=self.img_channels, architecture=architecture, conv_clamp=conv_clamp)    
+        common_kwargs = dict(img_channels=self.img_channels, architecture=architecture, conv_clamp=conv_clamp)
         cur_layer_idx = 0
         for res in self.block_resolutions:
             in_channels = channels_dict[res] if res < img_resolution else 0
@@ -1991,7 +1991,7 @@ class Discriminator(torch.nn.Module):
                 first_layer_idx=cur_layer_idx, use_fp16=use_fp16, **block_kwargs, **common_kwargs)
             setattr(self, f'b{res}', block)
             cur_layer_idx += block.num_layers
-        
+
         # dual discriminator or separate camera predictor
         if self.separate_camera or self.dual_discriminator:
             cur_layer_idx = 0
@@ -2003,7 +2003,7 @@ class Discriminator(torch.nn.Module):
                     first_layer_idx=cur_layer_idx, use_fp16=False, **block_kwargs, **common_kwargs)
                 setattr(self, f'c{res}', block)
                 cur_layer_idx += block.num_layers
-            
+
         # final output module
         self.b4 = DiscriminatorEpilogue(channels_dict[4], cmap_dim=cmap_dim, resolution=4, **epilogue_kwargs, **common_kwargs)
         self.register_buffer("alpha", torch.scalar_tensor(-1))
@@ -2011,7 +2011,7 @@ class Discriminator(torch.nn.Module):
     def set_alpha(self, alpha):
         if alpha is not None:
             self.alpha = self.alpha * 0 + alpha
-    
+
     def set_resolution(self, res):
         self.curr_status = res
 
@@ -2021,15 +2021,15 @@ class Discriminator(torch.nn.Module):
         img4cam = img.clone()
         if self.progressive and (img.size(-1) != self.lowres_head):
             img4cam = downsample(img, self.lowres_head)
-                    
+
         c, xc = None, None
         for res in [r for r in self.block_resolutions if r <= self.lowres_head or (not self.progressive)]:
             xc, img4cam = getattr(self, f'c{res}')(xc, img4cam, **block_kwargs)
-        
+
         if self.separate_camera:
             c = self.projector(xc)[:,:,0,0]
             if self.predict_9d_camera:
-                c = camera_9d_to_16d(c)    
+                c = camera_9d_to_16d(c)
         return c, xc, img4cam
 
     def get_camera_loss(self, RT=None, UV=None, c=None):
@@ -2047,7 +2047,7 @@ class Discriminator(torch.nn.Module):
         alpha = self.alpha
         img_res = input_img.size(-1)
         if self.progressive and (self.lowres_head is not None) and (self.alpha > -1):
-            if (self.alpha < 1) and (self.alpha > 0): 
+            if (self.alpha < 1) and (self.alpha > 0):
                 try:
                     n_levels, _, before_res, target_res = self.curr_status
                     alpha, index = math.modf(self.alpha * n_levels)
@@ -2055,7 +2055,7 @@ class Discriminator(torch.nn.Module):
                 except Exception as e:  # TODO: this is a hack, better to save status as buffers.
                     before_res = target_res = img_res
                 if before_res == target_res:  # no upsampling was used in generator, do not increase the discriminator
-                    alpha = 0    
+                    alpha = 0
                 block_resolutions = [res for res in self.block_resolutions if res <= target_res]
                 lowres_head = before_res
             elif self.alpha == 0:
@@ -2072,7 +2072,7 @@ class Discriminator(torch.nn.Module):
 
         # this is to handle real images to obtain nerf-size image.
         if (self.dual_discriminator or (self.dual_input_ratio is not None)) and ('img_nerf' not in inputs):
-            inputs['img_nerf'] = img    
+            inputs['img_nerf'] = img
             if self.dual_discriminator and (inputs['img_nerf'].size(-1) > self.lowres_head):  # using Conv to read image.
                 inputs['img_nerf'] = downsample(inputs['img_nerf'], self.lowres_head)
             elif self.dual_input_ratio is not None:   # similar to EG3d
@@ -2083,7 +2083,7 @@ class Discriminator(torch.nn.Module):
         camera_loss = None
         RT = inputs['camera_matrices'][1].detach() if 'camera_matrices' in inputs else None
         UV = inputs['camera_matrices'][2].detach() if 'camera_matrices' in inputs else None
-        
+
         # perform separate camera predictor or dual discriminator
         if self.dual_discriminator or self.separate_camera:
             temp_img = img if not self.dual_discriminator else inputs['img_nerf']
@@ -2101,7 +2101,7 @@ class Discriminator(torch.nn.Module):
         # obtain the downsampled image for progressive growing
         if self.progressive and (self.lowres_head is not None) and (self.alpha > -1) and (self.alpha < 1) and (alpha > 0):
             img0 = downsample(img, img.size(-1) // 2)
-           
+
         x = None if (not self.progressive) or (block_resolutions[0] == self.img_resolution) \
             else getattr(self, f'b{block_resolutions[0]}').fromrgb(img)
         for res in block_resolutions:
@@ -2112,7 +2112,7 @@ class Discriminator(torch.nn.Module):
                 if self.progressive:
                     x = x * alpha + block.fromrgb(img0) * (1 - alpha)
             x, img = block(x, img, **block_kwargs)
-        
+
         # predict camera based on discriminator features
         if (c.size(-1) == 0) and self.predict_camera and (not self.separate_camera):
             c = self.projector(x)[:,:,0,0]
@@ -2120,7 +2120,7 @@ class Discriminator(torch.nn.Module):
                 c = camera_9d_to_16d(c)
             if self.predict_3d_camera:
                 camera_loss = self.get_camera_loss(RT, UV, c)
-                
+
         # camera conditional discriminator
         cmap = None
         if self.c_dim > 0:
@@ -2129,7 +2129,7 @@ class Discriminator(torch.nn.Module):
         logits  = self.b4(x, img, cmap)
         if self.dual_discriminator:
             logits = torch.cat([logits, self.b4(x_nerf, img_nerf, cmap)], 0)
-                
+
         outputs = {'logits': logits}
         if self.predict_camera and (camera_loss is not None):
             outputs['camera_loss'] = camera_loss
@@ -2137,7 +2137,7 @@ class Discriminator(torch.nn.Module):
             outputs['camera'] = c
         return outputs
 
-      
+
 @persistence.persistent_class
 class Encoder(torch.nn.Module):
     def __init__(self,
@@ -2173,8 +2173,8 @@ class Encoder(torch.nn.Module):
 
         channel_base = int(channel_base * 32768)
         channels_dict = {res: min(channel_base // res, channel_max) for res in self.block_resolutions + [4]}
-        fp16_resolution = max(2 ** (self.img_resolution_log2 + 1 - num_fp16_res), 8)        
-        common_kwargs = dict(img_channels=self.img_channels, architecture=architecture, conv_clamp=conv_clamp)    
+        fp16_resolution = max(2 ** (self.img_resolution_log2 + 1 - num_fp16_res), 8)
+        common_kwargs = dict(img_channels=self.img_channels, architecture=architecture, conv_clamp=conv_clamp)
         cur_layer_idx = 0
         for res in self.block_resolutions:
             in_channels  = channels_dict[res] if res < img_resolution else 0
@@ -2189,7 +2189,7 @@ class Encoder(torch.nn.Module):
         # this is an encoder
         if self.output_mode in ['W', 'W+', 'None']:
             self.num_ws    = self.model_kwargs.get('num_ws', 0)
-            self.n_latents = self.num_ws if self.output_mode == 'W+' else (0 if self.output_mode == 'None' else 1) 
+            self.n_latents = self.num_ws if self.output_mode == 'W+' else (0 if self.output_mode == 'None' else 1)
             self.w_dim     = self.model_kwargs.get('w_dim', 512)
             self.add_dim   = self.model_kwargs.get('add_dim', 0) if not self.predict_camera else 9
             self.out_dim   = self.w_dim * self.n_latents + self.add_dim
@@ -2203,7 +2203,7 @@ class Encoder(torch.nn.Module):
     def set_alpha(self, alpha):
         if alpha is not None:
             self.alpha.fill_(alpha)
-    
+
     def set_resolution(self, res):
         self.curr_status = res
 
@@ -2213,16 +2213,16 @@ class Encoder(torch.nn.Module):
         alpha = self.alpha
         img_res = input_img.size(-1)
         if self.progressive and (self.lowres_head is not None) and (self.alpha > -1):
-            if (self.alpha < 1) and (self.alpha > 0): 
+            if (self.alpha < 1) and (self.alpha > 0):
                 try:
                     n_levels, _, before_res, target_res = self.curr_status
                     alpha, index = math.modf(self.alpha * n_levels)
                     index = int(index)
                 except Exception as e:  # TODO: this is a hack, better to save status as buffers.
-                    before_res = target_res = img_res 
+                    before_res = target_res = img_res
                 if before_res == target_res:
                     # no upsampling was used in generator, do not increase the discriminator
-                    alpha = 0    
+                    alpha = 0
                 block_resolutions = [res for res in self.block_resolutions if res <= target_res]
                 lowres_head = before_res
             elif self.alpha == 0:
@@ -2241,7 +2241,7 @@ class Encoder(torch.nn.Module):
 
         if self.progressive and (self.lowres_head is not None) and (self.alpha > -1) and (self.alpha < 1) and (alpha > 0):
             img0 = downsample(img, img.size(-1) // 2)
-           
+
         x = None if (not self.progressive) or (block_resolutions[0] == self.img_resolution) \
             else getattr(self, f'b{block_resolutions[0]}').fromrgb(img)
 
@@ -2251,16 +2251,16 @@ class Encoder(torch.nn.Module):
                 if self.architecture == 'skip':
                     img = img * alpha + img0 * (1 - alpha)
                 if self.progressive:
-                    x = x * alpha + block.fromrgb(img0) * (1 - alpha)      # combine from img0           
+                    x = x * alpha + block.fromrgb(img0) * (1 - alpha)      # combine from img0
             x, img = block(x, img, **block_kwargs)
-        
+
         outputs = {}
         if self.output_mode in ['W', 'W+', 'None']:
             out = self.projector(x)[:,:,0,0]
             if self.predict_camera:
                 out, out_cam_9d = out[:, 9:], out[:, :9]
                 outputs['camera'] = camera_9d_to_16d(out_cam_9d)
-            
+
             if self.output_mode == 'W+':
                 out = rearrange(out, 'b (n s) -> b n s', n=self.num_ws, s=self.w_dim)
             elif self.output_mode == 'W':
@@ -2270,7 +2270,7 @@ class Encoder(torch.nn.Module):
             outputs['ws'] = out
 
         return outputs
-    
+
 # ------------------------------------------------------------------------------------------- #
 
 class CameraQueriedSampler(torch.utils.data.Sampler):
@@ -2287,7 +2287,7 @@ class CameraQueriedSampler(torch.utils.data.Sampler):
         self.C = camera_module
         self.K = nearest_neighbors
         self.B = 1000
-        
+
     def update_dataset_cameras(self, estimator):
         import tqdm
         from torch_utils.distributed_utils import gather_list_and_concat
@@ -2296,7 +2296,7 @@ class CameraQueriedSampler(torch.utils.data.Sampler):
             predicted_cameras, image_indices, bsz = [], [], 64
             item_subset = [(i * self.num_replicas + self.rank) % len(self.dataset) for i in range((len(self.dataset) - 1) // self.num_replicas + 1)]
             for _, (images, _, indices) in tqdm.tqdm(enumerate(torch.utils.data.DataLoader(
-                    dataset=copy.deepcopy(self.dataset), sampler=item_subset, batch_size=bsz)), 
+                    dataset=copy.deepcopy(self.dataset), sampler=item_subset, batch_size=bsz)),
                 total=len(item_subset)//bsz+1, colour='red', desc=f'Estimating camera poses for the training set at'):
                 predicted_cameras += [estimator(images.to(self.device).to(torch.float32) / 127.5 - 1)]
                 image_indices += [indices.to(self.device).long()]
@@ -2306,11 +2306,11 @@ class CameraQueriedSampler(torch.utils.data.Sampler):
                 predicted_cameras = gather_list_and_concat(predicted_cameras)
                 image_indices = gather_list_and_concat(image_indices)
         output[image_indices] = predicted_cameras
-        self.dataset_cameras = output        
-                
+        self.dataset_cameras = output
+
     def get_knn_cameras(self):
         return torch.norm(
-            self.dataset_cameras.unsqueeze(1) - 
+            self.dataset_cameras.unsqueeze(1) -
             self.C.get_camera(self.B, self.device)[0].reshape(1,self.B,16), dim=2, p=None
         ).topk(self.K, largest=False, dim=0)[1]   # K x B
 

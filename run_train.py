@@ -20,12 +20,14 @@ from torch_utils import training_stats, custom_ops, distributed_utils
 from torch_utils.distributed_utils import get_init_file, get_shared_folder
 from omegaconf import DictConfig, OmegaConf
 
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+
 
 class UserError(Exception):
     pass
 
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+
 
 def setup_training_loop_kwargs(cfg):
     args = OmegaConf.create({})
@@ -33,18 +35,18 @@ def setup_training_loop_kwargs(cfg):
     # ------------------------------------------
     # General options: gpus, snap, metrics, seed
     # ------------------------------------------
-    args.rank       = 0
-    args.gpu        = 0
-    args.num_gpus   = torch.cuda.device_count() if cfg.gpus is None else cfg.gpus
-    args.nodes      = cfg.nodes if cfg.nodes is not None else 1
+    args.rank = 0
+    args.gpu = 0
+    args.num_gpus = torch.cuda.device_count() if cfg.gpus is None else cfg.gpus
+    args.nodes = cfg.nodes if cfg.nodes is not None else 1
     args.world_size = 1
-    
-    args.dist_url   = 'env://'
-    args.launcher   = cfg.launcher
-    args.partition  = cfg.partition
-    args.comment    = cfg.comment
-    args.timeout    = 4320 if cfg.timeout is None else cfg.timeout
-    args.job_dir    = ''
+
+    args.dist_url = 'env://'
+    args.launcher = cfg.launcher
+    args.partition = cfg.partition
+    args.comment = cfg.comment
+    args.timeout = 4320 if cfg.timeout is None else cfg.timeout
+    args.job_dir = ''
 
     if cfg.snap is None:
         cfg.snap = 50
@@ -60,7 +62,9 @@ def setup_training_loop_kwargs(cfg):
         cfg.metrics = ['fid50k_full']
     cfg.metrics = list(cfg.metrics)
     if not all(metric_main.is_valid_metric(metric) for metric in cfg.metrics):
-        raise UserError('\n'.join(['metrics can only contain the following values:'] + metric_main.list_valid_metrics()))
+        raise UserError('\n'.join(
+            ['metrics can only contain the following values:'] +
+            metric_main.list_valid_metrics()))
     args.metrics = cfg.metrics
 
     if cfg.seed is None:
@@ -70,20 +74,31 @@ def setup_training_loop_kwargs(cfg):
 
     # -----------------------------------
     # Dataset: data, cond, subset, mirror
-    # ----------------------------------- 
+    # -----------------------------------
 
     assert cfg.data is not None
     assert isinstance(cfg.data, str)
-    args.update({"training_set_kwargs": dict(class_name='training.dataset.ImageFolderDataset', path=cfg.data, resolution=cfg.resolution, use_labels=True, max_size=None, xflip=False)})
-    args.update({"data_loader_kwargs": dict(pin_memory=True, num_workers=3, prefetch_factor=2)})
+    args.update({"training_set_kwargs": dict(
+        class_name='training.dataset.ImageFolderDataset',
+        path=cfg.data,
+        resolution=cfg.resolution,
+        use_labels=True,
+        max_size=None,
+        xflip=False)})
+    args.update({"data_loader_kwargs": dict(
+        pin_memory=True, num_workers=3, prefetch_factor=2)})
     args.generation_with_image = getattr(cfg, 'generate_with_image', False)
     try:
-        training_set = dnnlib.util.construct_class_by_name(**args.training_set_kwargs) # subclass of training.dataset.Dataset
-        args.training_set_kwargs.resolution = training_set.resolution                  # be explicit about resolution
-        args.training_set_kwargs.use_labels = training_set.has_labels                  # be explicit about labels
-        args.training_set_kwargs.max_size = len(training_set)                          # be explicit about dataset size
+        training_set = dnnlib.util.construct_class_by_name(
+            **args.training_set_kwargs)  # subclass of training.dataset.Dataset
+        # be explicit about resolution
+        args.training_set_kwargs.resolution = training_set.resolution
+        # be explicit about labels
+        args.training_set_kwargs.use_labels = training_set.has_labels
+        # be explicit about dataset size
+        args.training_set_kwargs.max_size = len(training_set)
         desc = training_set.name
-        del training_set # conserve memory
+        del training_set  # conserve memory
     except IOError as err:
         raise UserError(f'data: {err}')
 
@@ -92,7 +107,8 @@ def setup_training_loop_kwargs(cfg):
     assert isinstance(cfg.cond, bool)
     if cfg.cond:
         if not args.training_set_kwargs.use_labels:
-            raise UserError('cond=True requires labels specified in dataset.json')
+            raise UserError(
+                'cond=True requires labels specified in dataset.json')
         desc += '-cond'
     else:
         args.training_set_kwargs.use_labels = False
@@ -100,7 +116,9 @@ def setup_training_loop_kwargs(cfg):
     if cfg.subset is not None:
         assert isinstance(cfg.subset, int)
         if not 1 <= cfg.subset <= args.training_set_kwargs.max_size:
-            raise UserError(f'subset must be between 1 and {args.training_set_kwargs.max_size}')
+            raise UserError(
+                'subset must be between 1 and '
+                f'{args.training_set_kwargs.max_size}')
         desc += f'-subset{cfg.subset}'
         if cfg.subset < args.training_set_kwargs.max_size:
             args.training_set_kwargs.max_size = cfg.subset
@@ -124,23 +142,27 @@ def setup_training_loop_kwargs(cfg):
         res = args.training_set_kwargs.resolution
         cfg.spec.fmaps = 1 if res >= 512 else 0.5
         cfg.spec.lrate = 0.002 if res >= 1024 else 0.0025
-        cfg.spec.gamma = 0.0002 * (res ** 2) / cfg.spec.mb # heuristic formula
+        cfg.spec.gamma = 0.0002 * (res ** 2) / cfg.spec.mb  # heuristic formula
         cfg.spec.ema = cfg.spec.mb * 10 / 32
-    
+
     if getattr(cfg.spec, 'lrate_disc', None) is None:
-        cfg.spec.lrate_disc = cfg.spec.lrate   # use the same learning rate for discriminator
+        # use the same learning rate for discriminator
+        cfg.spec.lrate_disc = cfg.spec.lrate
 
     # model (generator, discriminator)
     args.update({"G_kwargs": dict(**cfg.model.G_kwargs)})
     args.update({"D_kwargs": dict(**cfg.model.D_kwargs)})
-    args.update({"G_opt_kwargs": dict(class_name='torch.optim.Adam', lr=cfg.spec.lrate, betas=[0,0.99], eps=1e-8)})
-    args.update({"D_opt_kwargs": dict(class_name='torch.optim.Adam', lr=cfg.spec.lrate_disc, betas=[0,0.99], eps=1e-8)})
-    args.update({"loss_kwargs": dict(class_name='training.loss.StyleGAN2Loss', r1_gamma=cfg.spec.gamma, **cfg.model.loss_kwargs)})
-    
+    args.update({"G_opt_kwargs": dict(class_name='torch.optim.Adam',
+                lr=cfg.spec.lrate, betas=[0, 0.99], eps=1e-8)})
+    args.update({"D_opt_kwargs": dict(class_name='torch.optim.Adam',
+                lr=cfg.spec.lrate_disc, betas=[0, 0.99], eps=1e-8)})
+    args.update({"loss_kwargs": dict(class_name='training.loss.StyleGAN2Loss',
+                r1_gamma=cfg.spec.gamma, **cfg.model.loss_kwargs)})
+
     if cfg.spec.name == 'cifar':
-        args.loss_kwargs.pl_weight = 0 # disable path length regularization
-        args.loss_kwargs.style_mixing_prob = 0 # disable style mixing
-        args.D_kwargs.architecture = 'orig' # disable residual skip connections
+        args.loss_kwargs.pl_weight = 0  # disable path length regularization
+        args.loss_kwargs.style_mixing_prob = 0  # disable style mixing
+        args.D_kwargs.architecture = 'orig'  # disable residual skip connections  # noqa
 
     # kimg data config
     args.spec = cfg.spec  # just keep the dict.
@@ -149,7 +171,7 @@ def setup_training_loop_kwargs(cfg):
     args.batch_gpu = cfg.spec.mbstd
     args.ema_kimg = cfg.spec.ema
     args.ema_rampup = cfg.spec.ramp
-    
+
     # ---------------------------------------------------
     # Discriminator augmentation: aug, p, target, augpipe
     # ---------------------------------------------------
@@ -198,31 +220,33 @@ def setup_training_loop_kwargs(cfg):
     augpipe_specs = {
         'blit':   dict(xflip=1, rotate90=1, xint=1),
         'geom':   dict(scale=1, rotate=1, aniso=1, xfrac=1),
-        'color':  dict(brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1),
+        'color':  dict(brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1),  # noqa
         'filter': dict(imgfilter=1),
         'noise':  dict(noise=1),
         'cutout': dict(cutout=1),
-        'bgc0':   dict(xint=1, scale=1, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1),
-        'bg':     dict(xflip=1, rotate90=1, xint=1, scale=1, rotate=1, aniso=1, xfrac=1),
-        'bgc':    dict(xflip=1, rotate90=1, xint=1, scale=1, rotate=1, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1),
-        'bgcf':   dict(xflip=1, rotate90=1, xint=1, scale=1, rotate=1, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1, imgfilter=1),
-        'bgcfn':  dict(xflip=1, rotate90=1, xint=1, scale=1, rotate=1, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1, imgfilter=1, noise=1),
-        'bgcfnc': dict(xflip=1, rotate90=1, xint=1, scale=1, rotate=1, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1, imgfilter=1, noise=1, cutout=1),
+        'bgc0':   dict(xint=1, scale=1, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1),  # noqa
+        'bg':     dict(xflip=1, rotate90=1, xint=1, scale=1, rotate=1, aniso=1, xfrac=1),  # noqa
+        'bgc':    dict(xflip=1, rotate90=1, xint=1, scale=1, rotate=1, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1),  # noqa
+        'bgcf':   dict(xflip=1, rotate90=1, xint=1, scale=1, rotate=1, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1, imgfilter=1),  # noqa
+        'bgcfn':  dict(xflip=1, rotate90=1, xint=1, scale=1, rotate=1, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1, imgfilter=1, noise=1),  # noqa
+        'bgcfnc': dict(xflip=1, rotate90=1, xint=1, scale=1, rotate=1, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1, imgfilter=1, noise=1, cutout=1),  # noqa
     }
     assert cfg.augpipe in augpipe_specs
     if cfg.aug != 'noaug':
-        args.update({"augment_kwargs": dict(class_name='training.augment.AugmentPipe', **augpipe_specs[cfg.augpipe])})
+        args.update({"augment_kwargs": dict(
+            class_name='training.augment.AugmentPipe',
+            **augpipe_specs[cfg.augpipe])})
 
     # ----------------------------------
     # Transfer learning: resume, freezed
     # ----------------------------------
 
     resume_specs = {
-        'ffhq256':     'https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/transfer-learning-source-nets/ffhq-res256-mirror-paper256-noaug.pkl',
-        'ffhq512':     'https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/transfer-learning-source-nets/ffhq-res512-mirror-stylegan2-noaug.pkl',
-        'ffhq1024':    'https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/transfer-learning-source-nets/ffhq-res1024-mirror-stylegan2-noaug.pkl',
-        'celebahq256': 'https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/transfer-learning-source-nets/celebahq-res256-mirror-paper256-kimg100000-ada-target0.5.pkl',
-        'lsundog256':  'https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/transfer-learning-source-nets/lsundog-res256-paper256-kimg100000-noaug.pkl',
+        'ffhq256':     'https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/transfer-learning-source-nets/ffhq-res256-mirror-paper256-noaug.pkl',  # noqa
+        'ffhq512':     'https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/transfer-learning-source-nets/ffhq-res512-mirror-stylegan2-noaug.pkl',  # noqa
+        'ffhq1024':    'https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/transfer-learning-source-nets/ffhq-res1024-mirror-stylegan2-noaug.pkl',  # noqa
+        'celebahq256': 'https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/transfer-learning-source-nets/celebahq-res256-mirror-paper256-kimg100000-ada-target0.5.pkl',  # noqa
+        'lsundog256':  'https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/transfer-learning-source-nets/lsundog-res256-paper256-kimg100000-noaug.pkl',  # noqa
     }
 
     assert cfg.resume is None or isinstance(cfg.resume, str)
@@ -232,14 +256,14 @@ def setup_training_loop_kwargs(cfg):
         desc += '-noresume'
     elif cfg.resume in resume_specs:
         desc += f'-resume{cfg.resume}'
-        args.resume_pkl = resume_specs[cfg.resume] # predefined url
+        args.resume_pkl = resume_specs[cfg.resume]  # predefined url
     else:
         desc += '-resumecustom'
-        args.resume_pkl = cfg.resume # custom path or url
+        args.resume_pkl = cfg.resume  # custom path or url
 
     if cfg.resume != 'noresume':
-        args.ada_kimg = 100 # make ADA react faster at the beginning
-        args.ema_rampup = None # disable EMA rampup
+        args.ada_kimg = 100  # make ADA react faster at the beginning
+        args.ema_rampup = None  # disable EMA rampup
 
     if cfg.freezed is not None:
         assert isinstance(cfg.freezed, int)
@@ -287,21 +311,24 @@ def setup_training_loop_kwargs(cfg):
         desc = cfg.prefix + '-' + desc
     return desc, args
 
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+
 
 def subprocess_fn(rank, args):
     if not args.debug:
-        dnnlib.util.Logger(file_name=os.path.join(args.run_dir, 'log.txt'), file_mode='a', should_flush=True)
+        dnnlib.util.Logger(file_name=os.path.join(
+            args.run_dir, 'log.txt'), file_mode='a', should_flush=True)
 
     # Init torch.distributed.
     distributed_utils.init_distributed_mode(rank, args)
     if args.rank != 0:
         custom_ops.verbosity = 'none'
-    
+
     # Execute training loop.
     training_loop.training_loop(**args)
-    
-#----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
+
 
 class CommaSeparatedList(click.ParamType):
     name = 'list'
@@ -315,24 +342,25 @@ class CommaSeparatedList(click.ParamType):
 
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg: DictConfig):
-    
+
     outdir = cfg.outdir
 
     # Setup training options
     run_desc, args = setup_training_loop_kwargs(cfg)
-    
+
     # Pick output directory.
     prev_run_dirs = []
     if os.path.isdir(outdir):
-        prev_run_dirs = [x for x in os.listdir(outdir) if os.path.isdir(os.path.join(outdir, x))]
-    
+        prev_run_dirs = [x for x in os.listdir(
+            outdir) if os.path.isdir(os.path.join(outdir, x))]
+
     if cfg.resume_run is None:
         prev_run_ids = [re.match(r'^\d+', x) for x in prev_run_dirs]
         prev_run_ids = [int(x.group()) for x in prev_run_ids if x is not None]
         cur_run_id = max(prev_run_ids, default=-1) + 1
     else:
         cur_run_id = cfg.resume_run
-        
+
     args.run_dir = os.path.join(outdir, f'{cur_run_id:05d}-{run_desc}')
     print(outdir, args.run_dir)
 
@@ -370,16 +398,18 @@ def main(cfg: DictConfig):
         with open(os.path.join(args.run_dir, 'training_options.yaml'), 'wt') as fp:
             OmegaConf.save(config=args, f=fp.name)
 
-    # Launch processes.    
+    # Launch processes.
     print('Launching processes...')
     if (args.launcher == 'spawn') and (args.num_gpus > 1):
         args.dist_url = distributed_utils.get_init_file().as_uri()
         torch.multiprocessing.set_start_method('spawn')
-        torch.multiprocessing.spawn(fn=subprocess_fn, args=(args,), nprocs=args.num_gpus)
+        torch.multiprocessing.spawn(
+            fn=subprocess_fn, args=(args,), nprocs=args.num_gpus)
     else:
         subprocess_fn(rank=0, args=args)
 
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+
 
 if __name__ == "__main__":
     if os.getenv('SLURM_ARGS') is not None:
@@ -391,8 +421,8 @@ if __name__ == "__main__":
 
         from launcher import launch
         launch(slurm_arg, all_args)
-    
-    else:
-        main() # pylint: disable=no-value-for-parameter
 
-#----------------------------------------------------------------------------
+    else:
+        main()  # pylint: disable=no-value-for-parameter
+
+# ----------------------------------------------------------------------------

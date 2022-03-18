@@ -123,7 +123,7 @@ def modulated_conv2d(
     elif mode == '3d':
         x = conv3d(x=x, w=w.to(x.dtype), up=up, down=down, padding=padding, groups=batch_size)
     x = x.reshape(batch_size, -1, *x.shape[2:])
-    
+
     if noise is not None:
         x = x.add_(noise)
     return x
@@ -297,7 +297,7 @@ class MappingNetwork(torch.nn.Module):
                 misc.assert_shape(c, [None, self.c_dim])
                 y = normalize_2nd_moment(self.embed(c.to(torch.float32)))
                 x = torch.cat([x, y], dim=1) if x is not None else y
-        
+
         # Main layers.
         for idx in range(self.num_layers):
             layer = getattr(self, f'fc{idx}')
@@ -379,7 +379,7 @@ class SynthesisLayer(torch.nn.Module):
                 self.adapter = torch.nn.Sequential(
                     Conv2dLayer(out_channels * 2, out_channels // 4, kernel_size=1, activation=activation),
                     Conv2dLayer(out_channels // 4, out_channels, kernel_size=1, activation='linear'),
-                ) 
+                )
             elif 'ada' in upsample_mode:
                 self.adapter = torch.nn.Sequential(
                     Conv2dLayer(out_channels, 8, kernel_size=1, activation=activation),
@@ -400,11 +400,11 @@ class SynthesisLayer(torch.nn.Module):
             weight_sizes += [kernel_size]
         weight = torch.randn(weight_sizes).to(memory_format=memory_format)
         self.weight = torch.nn.Parameter(weight)
-        
+
         if use_noise:
             if self.mode == '2d':
                 noise_sizes = [resolution, resolution]
-            elif self.mode == '3d': 
+            elif self.mode == '3d':
                 noise_sizes = [resolution, resolution, resolution]
             else:
                 raise NotImplementedError('not support for MLP')
@@ -419,7 +419,7 @@ class SynthesisLayer(torch.nn.Module):
     def forward(self, x, w, noise_mode='random', fused_modconv=True, gain=1, skip_up=False, input_noise=None, **unused_kwargs):
         assert noise_mode in ['random', 'const', 'none']
         batch_size = x.size(0)
-        
+
         if (self.magnitude_ema_beta > 0):
             if self.training:  # updating EMA.
                 with torch.autograd.profiler.record_function('update_magnitude_ema'):
@@ -454,17 +454,17 @@ class SynthesisLayer(torch.nn.Module):
 
         flip_weight = (up == 1)  # slightly faster
         x = modulated_conv2d(
-            x=x, weight=self.weight, styles=styles, 
-            noise=noise if (use_default and not skip_up) else None, 
+            x=x, weight=self.weight, styles=styles,
+            noise=noise if (use_default and not skip_up) else None,
             up=up if use_default else 1,
-            padding=self.padding, 
-            resample_filter=resample_filter, 
-            flip_weight=flip_weight, 
+            padding=self.padding,
+            resample_filter=resample_filter,
+            flip_weight=flip_weight,
             fused_modconv=fused_modconv,
             groups=self.groups,
             mode=self.mode
         )
-        
+
         if (up == 2) and (not use_default):
             resolution = x.size(-1) * 2
             if 'bilinear' in self.upsample_mode:
@@ -476,7 +476,7 @@ class SynthesisLayer(torch.nn.Module):
                 x = F.interpolate(x, size=(resolution, resolution), mode='bicubic',  align_corners=True)
             elif 'pixelshuffle' in self.upsample_mode:  # does not have rotation invariance
                 x = F.interpolate(x, size=(resolution, resolution), mode='nearest') + torch.pixel_shuffle(self.adapter(x), 2)
-                if not 'noblur' in self.upsample_mode:           
+                if not 'noblur' in self.upsample_mode:
                    x = upfirdn2d.filter2d(x, self.resample_filter)
             elif 'nn_cat' in self.upsample_mode:
                 x_pad = x.new_zeros(*x.size()[:2], x.size(-2)+2, x.size(-1)+2)
@@ -505,7 +505,7 @@ class SynthesisLayer(torch.nn.Module):
 
         if (noise is not None) and (not use_default) and (not skip_up):
             x = x.add_(noise.type_as(x))
-        
+
         act_gain = self.act_gain * gain
         act_clamp = self.conv_clamp * gain if self.conv_clamp is not None else None
         x = bias_act.bias_act(x, self.bias.to(x.dtype), act=self.activation, gain=act_gain, clamp=act_clamp)
@@ -624,7 +624,7 @@ class SynthesisLayer3(torch.nn.Module):
         slope = 1 if self.is_torgb else 0.2
         x = filtered_lrelu.filtered_lrelu(x=x, fu=self.up_filter, fd=self.down_filter, b=self.bias.to(x.dtype),
             up=self.up_factor, down=self.down_factor, padding=self.padding, gain=gain, slope=slope, clamp=self.conv_clamp)
-        
+
         # Ensure correct shape and dtype.
         misc.assert_shape(x, [None, self.out_channels, int(self.out_size[1]), int(self.out_size[0])])
         assert x.dtype == dtype
@@ -681,7 +681,7 @@ class ToRGBLayer(torch.nn.Module):
             self.weight = torch.nn.Parameter(torch.randn(weight_shape).to(memory_format=memory_format))
             self.bias = torch.nn.Parameter(torch.zeros([out_channels]))
             self.weight_gain = 1 / np.sqrt(np.prod(weight_shape[1:]))
-        
+
         else:
             assert kernel_size == 1, "does not support larger kernel sizes for now. used in NeRF"
             assert mode != '3d', "does not support 3D convolution for now"
@@ -758,21 +758,21 @@ class SynthesisBlock(torch.nn.Module):
             if self.mode == '3d':
                 const_sizes = const_sizes + [resolution]
             self.const = torch.nn.Parameter(torch.randn(const_sizes))
-        
+
         if in_channels != 0:
             self.conv0 = util.construct_class_by_name(
                 class_name=layer_kwargs.get('layer_name', "training.networks.SynthesisLayer"),
-                in_channels=in_channels, out_channels=out_channels, 
-                w_dim=w_dim, resolution=resolution, 
+                in_channels=in_channels, out_channels=out_channels,
+                w_dim=w_dim, resolution=resolution,
                 up=2 if (not disable_upsample) else 1,
-                resample_filter=resample_filter, conv_clamp=conv_clamp, 
+                resample_filter=resample_filter, conv_clamp=conv_clamp,
                 channels_last=self.channels_last, **layer_kwargs)
             self.num_conv += 1
 
         if not self.use_single_layer:
             self.conv1 = util.construct_class_by_name(
                     class_name=layer_kwargs.get('layer_name', "training.networks.SynthesisLayer"),
-                    in_channels=out_channels, out_channels=out_channels, 
+                    in_channels=out_channels, out_channels=out_channels,
                     w_dim=w_dim, resolution=resolution,
                     conv_clamp=conv_clamp, channels_last=self.channels_last, **layer_kwargs)
             self.num_conv += 1
@@ -783,11 +783,11 @@ class SynthesisBlock(torch.nn.Module):
                 conv_clamp=conv_clamp, channels_last=self.channels_last,
                 groups=self.groups, mode=self.mode)
             self.num_torgb += 1
-            
+
         if in_channels != 0 and architecture == 'resnet':
             self.skip = Conv2dLayer(
                 in_channels, out_channels, kernel_size=1, bias=False, up=2,
-                resample_filter=resample_filter, 
+                resample_filter=resample_filter,
                 channels_last=self.channels_last,
                 mode=self.mode)
 
@@ -815,7 +815,7 @@ class SynthesisBlock(torch.nn.Module):
             if not self.use_single_layer:
                 layer_kwargs['input_noise'] = block_noise[:,1:2] if block_noise is not None else None
                 x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
-        
+
         elif self.architecture == 'resnet':
             y = self.skip(x, gain=np.sqrt(0.5))
             layer_kwargs['input_noise'] = block_noise[:,0:1] if block_noise is not None else None
@@ -888,44 +888,44 @@ class SynthesisBlock3(torch.nn.Module):
 
         # each block has two layer
         prev = max(block_id * 2 - 1, 0)
-        curr = block_id * 2 
+        curr = block_id * 2
         self.conv0 = util.construct_class_by_name(
                 class_name=layer_kwargs.get('layer_name', "training.networks.SynthesisLayer3"),
-                w_dim=self.w_dim, 
-                is_torgb=False, 
-                is_critically_sampled=is_critically_sampled, 
+                w_dim=self.w_dim,
+                is_torgb=False,
+                is_critically_sampled=is_critically_sampled,
                 use_fp16=use_fp16,
-                in_channels=in_channels, 
+                in_channels=in_channels,
                 out_channels=out_channels,
-                in_size=int(sizes[prev]), 
+                in_size=int(sizes[prev]),
                 out_size=int(sizes[curr]),
-                in_sampling_rate=int(sampling_rates[prev]), 
+                in_sampling_rate=int(sampling_rates[prev]),
                 out_sampling_rate=int(sampling_rates[curr]),
-                in_cutoff=cutoffs[prev], 
+                in_cutoff=cutoffs[prev],
                 out_cutoff=cutoffs[curr],
-                in_half_width=half_widths[prev], 
+                in_half_width=half_widths[prev],
                 out_half_width=half_widths[curr],
                 use_radial_filters=True,
                 **layer_kwargs)
         self.num_conv += 1
 
         prev = block_id * 2
-        curr = block_id * 2 + 1 
+        curr = block_id * 2 + 1
         self.conv1 = util.construct_class_by_name(
                 class_name=layer_kwargs.get('layer_name', "training.networks.SynthesisLayer3"),
-                w_dim=self.w_dim, 
-                is_torgb=False, 
-                is_critically_sampled=is_critically_sampled, 
+                w_dim=self.w_dim,
+                is_torgb=False,
+                is_critically_sampled=is_critically_sampled,
                 use_fp16=use_fp16,
-                in_channels=out_channels, 
+                in_channels=out_channels,
                 out_channels=out_channels,
-                in_size=int(sizes[prev]), 
+                in_size=int(sizes[prev]),
                 out_size=int(sizes[curr]),
-                in_sampling_rate=int(sampling_rates[prev]), 
+                in_sampling_rate=int(sampling_rates[prev]),
                 out_sampling_rate=int(sampling_rates[curr]),
-                in_cutoff=cutoffs[prev], 
+                in_cutoff=cutoffs[prev],
                 out_cutoff=cutoffs[curr],
-                in_half_width=half_widths[prev], 
+                in_half_width=half_widths[prev],
                 out_half_width=half_widths[curr],
                 use_radial_filters=True,
                 **layer_kwargs)
@@ -939,7 +939,7 @@ class SynthesisBlock3(torch.nn.Module):
         w_iter = iter(ws.unbind(dim=1))
         dtype = torch.float16 if self.use_fp16 and not force_fp32 else torch.float32
         memory_format = torch.contiguous_format
-        
+
         # Main layers.
         x = x.to(dtype=dtype, memory_format=memory_format)
         if add_on is not None:
@@ -954,7 +954,7 @@ class SynthesisBlock3(torch.nn.Module):
             y = self.torgb(y, next(w_iter), fused_modconv=True)
             y = y.to(dtype=torch.float32, memory_format=torch.contiguous_format)
             img = y
-        
+
         assert x.dtype == dtype
         assert img is None or img.dtype == torch.float32
         return x, img
@@ -1054,14 +1054,14 @@ class Generator(torch.nn.Module):
             self.mapping = util.construct_class_by_name(
                 class_name=mapping_kwargs.get('module_name', "training.networks.MappingNetwork"),
                 z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
-        
+
         if len(encoder_kwargs) > 0:   # Use Image-Encoder
             encoder_kwargs['model_kwargs'].update({'num_ws': self.num_ws, 'w_dim': self.w_dim})
             self.encoder = util.construct_class_by_name(
-               img_resolution=img_resolution, 
+               img_resolution=img_resolution,
                img_channels=img_channels,
-               **encoder_kwargs) 
-        
+               **encoder_kwargs)
+
     def forward(self, z=None, c=None, styles=None, truncation_psi=1, truncation_cutoff=None, img=None, **synthesis_kwargs):
         if styles is None:
             assert z is not None
@@ -1381,7 +1381,7 @@ class EqualConv2d(torch.nn.Module):
 class Encoder(torch.nn.Module):
     def __init__(self, size, n_latents, w_dim=512, add_dim=0, **unused):
         super().__init__()
-        
+
         channels = {
             4: 512,
             8: 512,
@@ -1392,12 +1392,12 @@ class Encoder(torch.nn.Module):
             256: 64,
             512: 32,
             1024: 16
-        }        
-        
+        }
+
         self.w_dim = w_dim
         self.add_dim = add_dim
         log_size = int(math.log(size, 2))
-        
+
         self.n_latents = n_latents
         convs = [Conv2dLayer(3, channels[size], 1)]
 
@@ -1406,7 +1406,7 @@ class Encoder(torch.nn.Module):
             out_channel = channels[2 ** (i - 1)]
             convs.append(EncoderResBlock(in_channel, out_channel))
             in_channel = out_channel
-   
+
         self.convs = torch.nn.Sequential(*convs)
         self.projector = EqualConv2d(in_channel, self.n_latents*self.w_dim + add_dim, 4, padding=0, bias=False)
 
@@ -1493,7 +1493,7 @@ class InstanceNormLayer3d(torch.nn.Module):
             x = x*weight + bias
         return x
 
-@persistence.persistent_class      
+@persistence.persistent_class
 class FeatureVolume(torch.nn.Module):
     def __init__(
         self,

@@ -136,12 +136,12 @@ def training_loop(
         data_loader_kwargs.update({'num_workers': 1, 'prefetch_factor': 1})
 
     training_set = dnnlib.util.construct_class_by_name(**training_set_kwargs)  # subclass of training.dataset.Dataset
-    
+
     # Setup dataloader/sampler
     # if getattr(G.synthesis, 'sampler', None) is not None:
     #     raise NotImplementedError('ERROR NEED TO TAKE A LOOK')
     #     # training_set_sampler = G.synthesis.sampler[0](
-    #     #     dataset=training_set, rank=rank, num_replicas=world_size, 
+    #     #     dataset=training_set, rank=rank, num_replicas=world_size,
     #     #     seed=random_seed, device=device, **G.synthesis.sampler[1])
     # else:
     training_set_sampler = misc.InfiniteSampler(
@@ -170,12 +170,12 @@ def training_loop(
     G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Module
     D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Module
     G_ema = copy.deepcopy(G).eval()
-    
+
     resize_real_img_early = D_kwargs.get('resize_real_early', False)
     disc_enable_ema = D_kwargs.get('enable_ema', False)
     if disc_enable_ema:
         D_ema = copy.deepcopy(D).eval()
-    
+
     # Resume from existing pickle.
     if (resume_pkl is not None) and (rank == 0):
         print(f'Resuming from "{resume_pkl}"')
@@ -241,7 +241,7 @@ def training_loop(
             opt = dnnlib.util.construct_class_by_name(module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
             phases += [dnnlib.EasyDict(name=name+'main', module=module, opt=opt, interval=1, scaler=None)]
             phases += [dnnlib.EasyDict(name=name+'reg', module=module, opt=opt, interval=reg_interval, scaler=None)]
-    
+
     for phase in phases:
         phase.start_event = None
         phase.end_event = None
@@ -263,7 +263,7 @@ def training_loop(
 
         if not os.path.exists(os.path.join(img_dir, 'reals.png')):
             save_image_grid(images, os.path.join(img_dir, 'reals.png'), drange=[0,255], grid_size=grid_size)
-        
+
         if not os.path.exists( os.path.join(img_dir, 'fakes_init.png')):
             with torch.no_grad():
                 images = torch.cat([G_ema.get_final_output(z=z, c=c, noise_mode='const', img=img).cpu() for z, c, img in zip(grid_z, grid_c, grid_i)]).numpy()
@@ -290,7 +290,7 @@ def training_loop(
         print()
 
     cur_nimg = resume_start
-    cur_tick = cur_nimg // (1000 * kimg_per_tick) 
+    cur_tick = cur_nimg // (1000 * kimg_per_tick)
 
     tick_start_nimg = cur_nimg
     tick_start_time = time.time()
@@ -303,22 +303,22 @@ def training_loop(
         # set number of images
         loss.set_alpha(cur_nimg)
         curr_res = loss.resolution
-        
+
         # Estimating Cameras for the training set (optional)
         if hasattr(training_set_sampler, 'update_dataset_cameras') and \
          (cur_nimg == resume_start and resume_start > 0 and cur_tick > update_cam_prior_ticks):
             training_set_sampler.update_dataset_cameras(D.get_estimated_camera)
-        
+
         # Fetch training data.
         with torch.autograd.profiler.record_function('data_fetch'):
             def load_data(iterator):
                 img, c, _ = next(iterator)
-                if resize_real_img_early: 
+                if resize_real_img_early:
                     img = resize_image(img, curr_res)
                 img = [{'img': img} for img in (img.to(device).to(torch.float32) / 127.5 - 1).split(batch_gpu)]
                 c = c.to(device).split(batch_gpu)
                 return img, c
-            
+
             phase_real_img, phase_real_c = load_data(training_set_iterator)
             all_gen_z   = torch.randn([len(phases) * batch_size, G.z_dim], device=device)
             all_gen_z   = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split(batch_size)]
@@ -326,31 +326,31 @@ def training_loop(
             all_gen_c   = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
             all_gen_c   = [phase_gen_c.split(batch_gpu) for phase_gen_c in all_gen_c.split(batch_size)]
             all_gen_img = [[None for _ in range(len(phase_real_img))] for _ in range(len(phases))]
-            
+
         # Execute training phases.
         # with torch.autograd.profiler.profile(with_stack=True, profile_memory=True) as prof:
         for phase, phase_gen_z, phase_gen_c, phase_gen_img in zip(phases, all_gen_z, all_gen_c, all_gen_img):
             if batch_idx % phase.interval != 0:
                 continue
-            
+
             if generation_with_image:
                 phase_gen_img, phase_gen_c = load_data(backup_data_iterator)
-                
+
             # Initialize gradient accumulation.
             if phase.start_event is not None:
                 phase.start_event.record(torch.cuda.current_stream(device))
             phase.opt.zero_grad(set_to_none=True)
             phase.module.requires_grad_(True)
-            
+
             # Accumulate gradients over multiple rounds.
             for round_idx, (real_img, real_c, gen_z, gen_c, fake_img) in enumerate(zip(phase_real_img, phase_real_c, phase_gen_z, phase_gen_c, phase_gen_img)):
                 sync = (round_idx == batch_size // (batch_gpu * world_size) - 1)
                 gain = phase.interval
 
                 losses = loss.accumulate_gradients(
-                    phase=phase.name, 
-                    real_img=real_img, 
-                    real_c=real_c, gen_z=gen_z, 
+                    phase=phase.name,
+                    real_img=real_img,
+                    real_c=real_c, gen_z=gen_z,
                     gen_c=gen_c, fake_img=fake_img,
                     sync=sync, gain=gain, scaler=phase.scaler)
 
@@ -360,7 +360,7 @@ def training_loop(
                 if len(losses) > 0:
                     if phase.scaler is not None:
                         phase.scaler.unscale_(phase.opt)
-                    all_grads = [] 
+                    all_grads = []
                     for param in phase.module.parameters():
                         if param.grad is not None:
                             misc.nan_to_num(param.grad, nan=0, posinf=1e5, neginf=-1e5, out=param.grad)
@@ -376,7 +376,7 @@ def training_loop(
 
             if phase.end_event is not None:
                 phase.end_event.record(torch.cuda.current_stream(device))
-        
+
         # Update G_ema.
         with torch.autograd.profiler.record_function('Gema'):
             ema_nimg = ema_kimg * 1000
@@ -402,12 +402,12 @@ def training_loop(
             ada_stats.update()
             adjust = np.sign(ada_stats['Loss/signs/real'] - ada_target) * (batch_size * ada_interval) / (ada_kimg * 1000)
             augment_pipe.p.copy_((augment_pipe.p + adjust).max(misc.constant(0, device=device)))
- 
+
         # Perform maintenance tasks once per tick.
         done = (cur_nimg >= total_kimg * 1000)
         if (not done) and (cur_tick != 0) and (cur_nimg < tick_start_nimg + kimg_per_tick * 1000):
             continue
-        
+
         # Print status line, accumulating the same information in stats_collector.
         tick_end_time = time.time()
         fields = [f"[{run_dir}]:"]
@@ -469,7 +469,7 @@ def training_loop(
                     pickle.dump(snapshot_data, f)
                 # save the latest checkpoint
                 shutil.copy(snapshot_pkl, os.path.join(run_dir, 'latest-network-snapshot.pkl'))
-        
+
         # Evaluate metrics.
         if (snapshot_data is not None) and (len(metrics) > 0) and (cur_tick > 1):
             if rank == 0:
@@ -501,7 +501,7 @@ def training_loop(
             if rank == 0:
                 losses = [(key, fields[key]) for key in fields if 'Loss/' in key]
                 losses = ["{}: {:.4f}".format(key[5:], loss['mean']) for key, loss in losses]
-                
+
                 print('\t'.join(losses))
 
         if stats_tfevents is not None:
@@ -520,7 +520,7 @@ def training_loop(
         tick_start_nimg = cur_nimg
         tick_start_time = time.time()
         maintenance_time = tick_start_time - tick_end_time
-        
+
         if done:
             break
 
