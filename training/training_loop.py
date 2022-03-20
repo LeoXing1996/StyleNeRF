@@ -8,6 +8,7 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
+import io
 import imp
 import os
 import time
@@ -110,6 +111,8 @@ def training_loop(
     progress_fn             = None,     # Callback function for updating training progress. Called for all ranks.
     update_cam_prior_ticks  = None,     # (optional) Non-parameteric updating camera poses of the dataset
     generation_with_image   = False,    # (optional) For each random z, you also sample an image associated with it.
+    slurm = False,
+    petrel_mapping=None,
     **unused,
 ):
     # Initialize.
@@ -249,6 +252,30 @@ def training_loop(
             phase.start_event = torch.cuda.Event(enable_timing=True)
             phase.end_event = torch.cuda.Event(enable_timing=True)
 
+    # Initialize logs.
+    if rank == 0:
+        print('Initializing logs...')
+    stats_collector = training_stats.Collector(regex='.*')
+    stats_metrics = dict()
+    stats_jsonl = None
+    stats_tfevents = None
+    if rank == 0:
+        stats_jsonl = open(os.path.join(run_dir, 'stats.jsonl'), 'at')
+        try:
+            if slurm:
+                from pavi import SummaryWriter as Writer
+                proj_name = run_dir.split('/')[-1]
+                stats_tfevents = Writer(proj_name, project='NeRF-GANs')
+                from mmcv.fileio import FileClient
+                client = FileClient('petrel', path_mapping=petrel_mapping)
+            else:
+                import torch.utils.tensorboard as tensorboard
+                stats_tfevents = tensorboard.SummaryWriter(run_dir)
+                client = None
+        except ImportError as err:
+            client = None
+            print('Skipping tfevents export:', err)
+
     # Export sample images.
     grid_size = None
     grid_z = None
@@ -262,27 +289,12 @@ def training_loop(
         grid_i = (torch.from_numpy(images).float() / 127.5 - 1).to(device).split(batch_gpu)
 
         if not os.path.exists(os.path.join(img_dir, 'reals.png')):
-            save_image_grid(images, os.path.join(img_dir, 'reals.png'), drange=[0,255], grid_size=grid_size)
+            save_image_grid(images, os.path.join(img_dir, 'reals.png'), drange=[0,255], grid_size=grid_size, client=client)
 
         if not os.path.exists( os.path.join(img_dir, 'fakes_init.png')):
             with torch.no_grad():
                 images = torch.cat([G_ema.get_final_output(z=z, c=c, noise_mode='const', img=img).cpu() for z, c, img in zip(grid_z, grid_c, grid_i)]).numpy()
-            save_image_grid(images, os.path.join(img_dir, 'fakes_init.png'), drange=[-1,1], grid_size=grid_size)
-
-    # Initialize logs.
-    if rank == 0:
-        print('Initializing logs...')
-    stats_collector = training_stats.Collector(regex='.*')
-    stats_metrics = dict()
-    stats_jsonl = None
-    stats_tfevents = None
-    if rank == 0:
-        stats_jsonl = open(os.path.join(run_dir, 'stats.jsonl'), 'at')
-        try:
-            import torch.utils.tensorboard as tensorboard
-            stats_tfevents = tensorboard.SummaryWriter(run_dir)
-        except ImportError as err:
-            print('Skipping tfevents export:', err)
+            save_image_grid(images, os.path.join(img_dir, 'fakes_init.png'), drange=[-1,1], grid_size=grid_size, client=client)
 
     # Train.
     if rank == 0:
@@ -445,10 +457,10 @@ def training_loop(
         if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
             with torch.no_grad():
                 images = torch.cat([G_ema.get_final_output(z=z, c=c, noise_mode='const', img=None).cpu() for z, c, img in zip(grid_z, grid_c, grid_i)]).numpy()
-                save_image_grid(images, os.path.join(img_dir, f'fakes{cur_nimg//1000:06d}.png'), drange=[-1,1], grid_size=grid_size)
+                save_image_grid(images, os.path.join(img_dir, f'fakes{cur_nimg//1000:06d}.png'), drange=[-1,1], grid_size=grid_size, client=client)
 
                 images = torch.cat([G_ema.get_final_output(z=z, c=c, noise_mode='const', img=img, camera_mode=[0.5,0.5,0.5]).cpu() for z, c, img in zip(grid_z, grid_c, grid_i)]).numpy()
-                save_image_grid(images, os.path.join(img_dir, f'fakes{cur_nimg//1000:06d}_000.png'), drange=[-1,1], grid_size=grid_size)
+                save_image_grid(images, os.path.join(img_dir, f'fakes{cur_nimg//1000:06d}_000.png'), drange=[-1,1], grid_size=grid_size, client=client)
 
         # Save network snapshot.
         snapshot_pkl = None
@@ -465,10 +477,15 @@ def training_loop(
                 del module # conserve memory
             snapshot_pkl = os.path.join(run_dir, f'network-snapshot-{cur_nimg//1000:06d}.pkl')
             if rank == 0:
-                with open(snapshot_pkl, 'wb') as f:
-                    pickle.dump(snapshot_data, f)
-                # save the latest checkpoint
-                shutil.copy(snapshot_pkl, os.path.join(run_dir, 'latest-network-snapshot.pkl'))
+                if client is not None:
+                    with io.BytesIO() as f:
+                        pickle.dump(snapshot_data, f)
+                        client.put(f.getvalue(), snapshot_pkl)
+                else:
+                    with open(snapshot_pkl, 'wb') as f:
+                        pickle.dump(snapshot_data, f)
+                    # save the latest checkpoint
+                    shutil.copy(snapshot_pkl, os.path.join(run_dir, 'latest-network-snapshot.pkl'))
 
         # Evaluate metrics.
         if (snapshot_data is not None) and (len(metrics) > 0) and (cur_tick > 1):
@@ -507,10 +524,16 @@ def training_loop(
         if stats_tfevents is not None:
             global_step = int(cur_nimg / 1e3)
             walltime = timestamp - start_time
+
+            if slurm:
+                iter_time_dict = dict(iteration=global_step)
+            else:
+                iter_time_dict = dict(global_step=global_step,
+                                      walltime=walltime)
             for name, value in stats_dict.items():
-                stats_tfevents.add_scalar(name, value.mean, global_step=global_step, walltime=walltime)
+                stats_tfevents.add_scalar(name, value.mean, **iter_time_dict)
             for name, value in stats_metrics.items():
-                stats_tfevents.add_scalar(f'Metrics/{name}', value, global_step=global_step, walltime=walltime)
+                stats_tfevents.add_scalar(f'Metrics/{name}', value, **iter_time_dict)
             stats_tfevents.flush()
         if progress_fn is not None:
             progress_fn(cur_nimg // 1000, total_kimg)

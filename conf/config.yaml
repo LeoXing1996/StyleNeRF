@@ -3,6 +3,11 @@ defaults:
   - model: default
   - spec: paper512
 
+# change the output dir to root
+hydra:
+  run:
+    dir: ./
+
 # general options
 outdir: ~
 dry_run: False
@@ -47,3 +52,6 @@ gpus: ~     # Number of GPUs to use [default: 1]
 port: ~
 nodes: ~
 timeout: ~
+
+# our own configs
+slurm: False

@@ -129,6 +129,8 @@ def make_cache_dir_path(*paths: str) -> str:
         return os.path.join(_dnnlib_cache_dir, *paths)
     if 'DNNLIB_CACHE_DIR' in os.environ:
         return os.path.join(os.environ['DNNLIB_CACHE_DIR'], *paths)
+    if 'cache' in os.environ:
+        return os.path.join(os.environ['cache'], '.cache', 'dnnlib', *paths)
     if 'HOME' in os.environ:
         return os.path.join(os.environ['HOME'], '.cache', 'dnnlib', *paths)
     if 'USERPROFILE' in os.environ:

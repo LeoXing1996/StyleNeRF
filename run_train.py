@@ -2,6 +2,7 @@
 
 
 from math import dist
+import shutil
 import sys
 import os
 import click
@@ -31,6 +32,8 @@ class UserError(Exception):
 
 def setup_training_loop_kwargs(cfg):
     args = OmegaConf.create({})
+
+    slurm = cfg.slurm
 
     # ------------------------------------------
     # General options: gpus, snap, metrics, seed
@@ -78,8 +81,12 @@ def setup_training_loop_kwargs(cfg):
 
     assert cfg.data is not None
     assert isinstance(cfg.data, str)
+    if slurm:
+        data_cls_name = 'PetrelDataset'
+    else:
+        data_cls_name = 'ImageFolderDataset'
     args.update({"training_set_kwargs": dict(
-        class_name='training.dataset.ImageFolderDataset',
+        class_name='training.dataset.{}'.format(data_cls_name),
         path=cfg.data,
         resolution=cfg.resolution,
         use_labels=True,
@@ -280,14 +287,14 @@ def setup_training_loop_kwargs(cfg):
         cfg.fp32 = False
     assert isinstance(cfg.fp32, bool)
     if cfg.fp32:
-        args.G_kwargs.synthesis_kwargs.num_fp16_res = args.D_kwargs.num_fp16_res = 0
-        args.G_kwargs.synthesis_kwargs.conv_clamp = args.D_kwargs.conv_clamp = None
+        args.G_kwargs.synthesis_kwargs.num_fp16_res = args.D_kwargs.num_fp16_res = 0  # noqa
+        args.G_kwargs.synthesis_kwargs.conv_clamp = args.D_kwargs.conv_clamp = None  # noqa
 
     if cfg.nhwc is None:
         cfg.nhwc = False
     assert isinstance(cfg.nhwc, bool)
     if cfg.nhwc:
-        args.G_kwargs.synthesis_kwargs.fp16_channels_last = args.D_kwargs.block_kwargs.fp16_channels_last = True
+        args.G_kwargs.synthesis_kwargs.fp16_channels_last = args.D_kwargs.block_kwargs.fp16_channels_last = True  # noqa
 
     if cfg.nobench is None:
         cfg.nobench = False
@@ -395,8 +402,13 @@ def main(cfg: DictConfig):
     print('Creating output directory...')
     if not os.path.exists(args.run_dir):
         os.makedirs(args.run_dir)
-        with open(os.path.join(args.run_dir, 'training_options.yaml'), 'wt') as fp:
+        with open(os.path.join(args.run_dir, 'training_options.yaml'), 'wt') as fp:  # noqa
             OmegaConf.save(config=args, f=fp.name)
+
+    print('Copy \'.hydra\' file to run dir...')
+    old_hydra_folder = '.hydra'
+    new_hydra_folder = os.path.join(args.run_dir, '.hydra')
+    shutil.move(old_hydra_folder, new_hydra_folder)
 
     # Launch processes.
     print('Launching processes...')
@@ -412,17 +424,18 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
-    if os.getenv('SLURM_ARGS') is not None:
-        # deparcated launcher for slurm jobs.
-        slurm_arg = eval(os.getenv('SLURM_ARGS'))
-        all_args = sys.argv[1:]
-        print(slurm_arg)
-        print(all_args)
+    # if os.getenv('SLURM_ARGS') is not None:
+    #     # deparcated launcher for slurm jobs.
+    #     slurm_arg = eval(os.getenv('SLURM_ARGS'))
+    #     all_args = sys.argv[1:]
+    #     print(slurm_arg)
+    #     print(all_args)
 
-        from launcher import launch
-        launch(slurm_arg, all_args)
+    #     from launcher import launch
+    #     launch(slurm_arg, all_args)
 
-    else:
-        main()  # pylint: disable=no-value-for-parameter
+    # else:
+    #     main()  # pylint: disable=no-value-for-parameter
+    main()
 
 # ----------------------------------------------------------------------------

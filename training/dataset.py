@@ -102,7 +102,7 @@ class Dataset(torch.utils.data.Dataset):
         if self._xflip[idx]:
             assert image.ndim == 3  # CHW
             image = image[:, :, ::-1]
-        return image.copy(), self.get_label(idx)
+        return image.copy(), self.get_label(idx), idx
 
     def get_label(self, idx):
         label = self._get_raw_labels()[self._raw_idx[idx]]
