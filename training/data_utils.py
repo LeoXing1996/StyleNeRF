@@ -1,5 +1,7 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 
+import io
+
 import albumentations
 import cv2
 import numpy as np
