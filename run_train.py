@@ -369,7 +369,12 @@ def main(cfg: DictConfig):
         cur_run_id = cfg.resume_run
 
     args.run_dir = os.path.join(outdir, f'{cur_run_id:05d}-{run_desc}')
-    print(outdir, args.run_dir)
+
+    bucket = cfg.bucket
+    if bucket.endswith('/'):
+        bucket = bucket[:-1]
+    args.petrel_dir = os.path.join(bucket, args.run_dir)
+    args.petrel_mapping = {args.run_dir: args.petrel_dir}
 
     if cfg.resume_run is not None:
         pkls = sorted(glob.glob(args.run_dir + '/network*.pkl'))
