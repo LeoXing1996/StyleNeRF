@@ -1,2 +1,2 @@
 SPEC=paper256
-MODEL=stylenerf_car
+MODEL=stylenerf_cars
