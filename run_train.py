@@ -1,24 +1,18 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 
 
-from math import dist
 import shutil
-import sys
 import os
 import click
 import re
-import json
 import glob
-import tempfile
 import torch
 import dnnlib
 import hydra
 
-from datetime import date
 from training import training_loop
 from metrics import metric_main
-from torch_utils import training_stats, custom_ops, distributed_utils
-from torch_utils.distributed_utils import get_init_file, get_shared_folder
+from torch_utils import custom_ops, distributed_utils
 from omegaconf import DictConfig, OmegaConf
 
 # ----------------------------------------------------------------------------
