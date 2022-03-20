@@ -56,3 +56,4 @@ timeout: ~
 # our own configs
 slurm: False
 bucket: s3://mmgen-dev/NeRF-GAN/StyleNeRF/
+desc: ~

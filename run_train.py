@@ -308,8 +308,8 @@ def setup_training_loop_kwargs(cfg):
         args.data_loader_kwargs.num_workers = cfg.workers
 
     args.debug = cfg.debug
-    if getattr(cfg, "prefix", None) is not None:
-        desc = cfg.prefix + '-' + desc
+    if getattr(cfg, "desc", None) is not None:
+        desc = desc + '-' + cfg.desc
     return desc, args
 
 # ----------------------------------------------------------------------------
@@ -367,7 +367,7 @@ def main(cfg: DictConfig):
     bucket = cfg.bucket
     if bucket.endswith('/'):
         bucket = bucket[:-1]
-    args.petrel_dir = os.path.join(bucket, args.run_dir)
+    args.petrel_dir = os.path.join(bucket, f'{cur_run_id:05d}-{run_desc}')
     args.petrel_mapping = {args.run_dir: args.petrel_dir}
 
     if cfg.resume_run is not None:
