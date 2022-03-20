@@ -22,5 +22,5 @@ srun -p ${PARTITION} \
     -x ${DRAIN_NODE} \
     ${SRUN_ARGS} \
     python run_train.py outdir=${WORK_DIR} slurm=True data=${DATA}  \
-                        spec=${SPEC} MODEL=${MODEL} desc=${DESC} \
+                        spec=${SPEC} model=${MODEL} desc=${DESC} \
                         ${PYTHON_ARGS}
