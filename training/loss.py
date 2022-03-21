@@ -30,9 +30,9 @@ class Loss:
 
 class StyleGAN2Loss(Loss):
     def __init__(
-        self, device, G_mapping, G_synthesis, D, 
+        self, device, G_mapping, G_synthesis, D,
         G_encoder=None, augment_pipe=None, D_ema=None,
-        style_mixing_prob=0.9, r1_gamma=10, 
+        style_mixing_prob=0.9, r1_gamma=10,
         pl_batch_shrink=2, pl_decay=0.01, pl_weight=2, other_weights=None,
         curriculum=None, alpha_start=0.0, cycle_consistency=False, label_smooth=0,
         generator_mode='random_z_random_c'):
@@ -65,7 +65,7 @@ class StyleGAN2Loss(Loss):
 
     def set_alpha(self, steps):
         alpha = None
-        if self.curriculum is not None:
+        if self.curriculum is not None and self.curriculum != 'None':
             if self.curriculum == 'upsample':
                 alpha = 0.0
             else:
@@ -85,7 +85,7 @@ class StyleGAN2Loss(Loss):
                 m.set_steps(steps)
             if hasattr(m, "set_resolution") and m != self:
                 m.set_resolution(self.curr_status)
-        
+
         self.G_synthesis.apply(_apply)
         self.curr_status = self.resolution
         self.D.apply(_apply)
@@ -104,11 +104,11 @@ class StyleGAN2Loss(Loss):
                 with misc.ddp_sync(self.D, False):
                     synthesis_kwargs['camera_RT'] = misc.get_func(self.D, 'get_estimated_camera')[0](img)
             with misc.ddp_sync(self.G_synthesis, sync):
-                out = self.G_synthesis(ws, **synthesis_kwargs)            
+                out = self.G_synthesis(ws, **synthesis_kwargs)
             if get_loss:  # consistency loss given the image predicted camera (train the image encoder jointly)
                 out['consist_l1_loss']    = F.smooth_l1_loss(out['img'], img['img']) * 2.0   # TODO: DEBUG
                 out['consist_lpips_loss'] = self.lpips_loss(out['img'],  img['img']) * 10.0  # TODO: DEBUG
-            
+
         elif (generator_mode == 'random_z_random_c') or (generator_mode == 'random_z_image_c'):
             with misc.ddp_sync(self.G_mapping, sync):
                 ws  = self.G_mapping(z, c)
@@ -163,7 +163,7 @@ class StyleGAN2Loss(Loss):
         assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
         do_Gmain = (phase in ['Gmain', 'Gboth'])
         do_Dmain = (phase in ['Dmain', 'Dboth'])
-        do_Gpl   = (phase in ['Greg', 'Gboth']) 
+        do_Gpl   = (phase in ['Greg', 'Gboth'])
         do_Dr1   = (phase in ['Dreg', 'Dboth'])
         losses   = {}
 
@@ -178,11 +178,11 @@ class StyleGAN2Loss(Loss):
                 reg_loss  += self.get_loss(gen_logits, 'G')
                 if isinstance(gen_logits, dict):
                     gen_logits = gen_logits['logits']
-                    
+
                 loss_Gmain = torch.nn.functional.softplus(-gen_logits) # -log(sigmoid(gen_logits))
                 if self.label_smooth > 0:
                     loss_Gmain = loss_Gmain * (1 - self.label_smooth) +  torch.nn.functional.softplus(gen_logits) * self.label_smooth
-                
+
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 training_stats.report('Loss/G/loss', loss_Gmain)
@@ -198,7 +198,7 @@ class StyleGAN2Loss(Loss):
             with torch.autograd.profiler.record_function('Gpl_forward'):
                 batch_size = max(1, gen_z.shape[0] // self.pl_batch_shrink)
                 gen_img, gen_ws = self.run_G(
-                    gen_z[:batch_size], gen_c[:batch_size], sync=sync, 
+                    gen_z[:batch_size], gen_c[:batch_size], sync=sync,
                     img=fake_img[:batch_size] if fake_img is not None else None)
                 if isinstance(gen_img, dict):  gen_img = gen_img['img']
                 pl_noise = torch.randn_like(gen_img) / np.sqrt(gen_img.shape[2] * gen_img.shape[3])
@@ -222,13 +222,13 @@ class StyleGAN2Loss(Loss):
         loss_Dgen, reg_loss = 0, 0
         if do_Dmain:
             with torch.autograd.profiler.record_function('Dgen_forward'):
-                gen_img    = self.run_G(gen_z, gen_c, sync=False, img=fake_img)[0]                
+                gen_img    = self.run_G(gen_z, gen_c, sync=False, img=fake_img)[0]
                 reg_loss  += self.get_loss(gen_img, 'D')
                 gen_logits = self.run_D(gen_img, gen_c, sync=False) # Gets synced by loss_Dreal.
                 reg_loss  += self.get_loss(gen_logits, 'D')
                 if isinstance(gen_logits, dict):
                     gen_logits = gen_logits['logits']
-                   
+
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake',  gen_logits.sign())
                 loss_Dgen = torch.nn.functional.softplus(gen_logits) # -log(1 - sigmoid(gen_logits))
@@ -260,7 +260,7 @@ class StyleGAN2Loss(Loss):
                     loss_Dreal = torch.nn.functional.softplus(-real_logits) # -log(sigmoid(real_logits))
                     if self.label_smooth > 0:
                         loss_Dreal = loss_Dreal * (1 - self.label_smooth) +  torch.nn.functional.softplus(real_logits) * self.label_smooth
-                    
+
                     training_stats.report('Loss/D/loss', loss_Dgen.mean() + loss_Dreal.mean())
 
                 loss_Dr1 = 0
