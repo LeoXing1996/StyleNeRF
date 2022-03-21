@@ -267,7 +267,9 @@ def training_loop(
                 proj_name = run_dir.split('/')[-1]
                 stats_tfevents = Writer(proj_name, project='NeRF-GANs')
                 from mmcv.fileio import FileClient
-                client = FileClient('petrel', path_mapping=petrel_mapping)
+                # petrel_mapping from args is an `omega dict config`
+                petrel_mapping = dict(petrel_mapping)
+                client = FileClient('petrel', path_mapping=dict(petrel_mapping))
             else:
                 import torch.utils.tensorboard as tensorboard
                 stats_tfevents = tensorboard.SummaryWriter(run_dir)
