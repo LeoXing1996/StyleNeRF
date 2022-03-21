@@ -47,7 +47,7 @@ def get_feature_detector(url, device=torch.device('cpu'), num_gpus=1, rank=0, ve
         if not is_leader and num_gpus > 1:
             torch.distributed.barrier() # leader goes first
         with dnnlib.util.open_url(url, verbose=(verbose and is_leader)) as f:
-            _feature_detector_cache[key] = torch.jit.load(f).eval().to(device)
+            _feature_detector_cache[key] = pickle.load(f).to(device)
         if is_leader and num_gpus > 1:
             torch.distributed.barrier() # others follow
     return _feature_detector_cache[key]
@@ -294,7 +294,7 @@ def compute_feature_stats_for_generator(opts, detector_url, detector_kwargs, rel
             images = torch.from_numpy(images).to(opts.device)
             # images = np.stack([imageio.imread(other_data[i % len(other_data)]) for i in batch_idxs], axis=0)
             # images = torch.from_numpy(images).to(opts.device).permute(0,3,1,2)
-            
+
         if images.shape[1] == 1:
             images = images.repeat([1, 3, 1, 1])
         features = detector(images, **detector_kwargs)
