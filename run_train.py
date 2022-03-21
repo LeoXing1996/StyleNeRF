@@ -28,6 +28,7 @@ def setup_training_loop_kwargs(cfg):
     args = OmegaConf.create({})
 
     slurm = cfg.slurm
+    args.slurm = slurm
 
     # ------------------------------------------
     # General options: gpus, snap, metrics, seed
@@ -308,7 +309,7 @@ def setup_training_loop_kwargs(cfg):
         args.data_loader_kwargs.num_workers = cfg.workers
 
     args.debug = cfg.debug
-    if getattr(cfg, "desc", None) is not None:
+    if getattr(cfg, "desc", None):
         desc = desc + '-' + cfg.desc
     return desc, args
 
