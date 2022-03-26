@@ -9,18 +9,21 @@
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 """Generate images using pretrained network pickle."""
 
+import glob
+import math
 import os
 import re
-import time
-import glob
 from typing import List, Optional
 
 import click
-import dnnlib
+import imageio
 import numpy as np
 import PIL.Image
 import torch
-import imageio
+from torchvision.utils import make_grid as make_grid_off
+from tqdm import tqdm
+
+import dnnlib
 import legacy
 from renderer import Renderer
 
@@ -39,6 +42,46 @@ def num_range(s: str) -> List[int]:
     return [int(x) for x in vals]
 
 
+def get_factor_close_to_sqr(num):
+    sqr = int(math.sqrt(num))
+    for n in range(sqr, 0, -1):
+        if num % n == 0:
+            return n
+
+
+def make_grid(imgs, nrows=None, padding=2):
+    """Convert the input tensor to a grid
+    Args:
+        imgs (torch.Tensor): Tensor shape like ``[bz, H, W, 3]``.
+
+    Returns:
+        torch.Tensor: Image gird shape like
+    """
+    if nrows is None:
+        bz = imgs.size(0)
+        ncols = get_factor_close_to_sqr(bz)
+        # make `n_cols` larger than `nrows`
+        nrows = bz // ncols
+    grid = make_grid_off(imgs.permute(0, 3, 1, 2), nrows,
+                         padding=padding).permute(1, 2, 0)
+    return grid
+
+
+def proc_img(img, nrows=None, padding=2):
+    if nrows is None:
+        bz = img.size(0)
+        ncols = get_factor_close_to_sqr(bz)
+        # make `n_cols` larger than `nrows`
+        nrows = bz // ncols
+
+    # rescale and clip
+    img = (img * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+
+    # make grid
+    img = make_grid_off(img, nrows, padding=padding).permute(1, 2, 0)
+    return img.cpu().numpy()
+
+
 # ----------------------------------------------------------------------------
 os.environ['PYOPENGL_PLATFORM'] = 'egl'
 
@@ -50,6 +93,11 @@ os.environ['PYOPENGL_PLATFORM'] = 'egl'
               help='Network pickle filename',
               required=True)
 @click.option('--seeds', type=num_range, help='List of random seeds')
+@click.option('--bz', type=int, default=2, help='The batch size.')
+@click.option('--nrows',
+              type=int,
+              default=None,
+              help='Number of rows when vis grid')
 @click.option('--trunc',
               'truncation_psi',
               type=float,
@@ -72,7 +120,7 @@ os.environ['PYOPENGL_PLATFORM'] = 'egl'
 @click.option('--outdir',
               help='Where to save the output images',
               type=str,
-              required=True,
+              default='render_out',
               metavar='DIR')
 @click.option('--render-program', default=None, show_default=True)
 @click.option('--render-option',
@@ -94,6 +142,8 @@ def generate_images(ctx: click.Context,
                     truncation_psi: float,
                     noise_mode: str,
                     outdir: str,
+                    bz: Optional[int],
+                    nrows: Optional[int],
                     class_idx: Optional[int],
                     projected_w: Optional[str],
                     render_program=None,
@@ -127,9 +177,9 @@ def generate_images(ctx: click.Context,
                   'unconditional network')
 
     # avoid persistent classes...
-    from training.networks import Generator
     # from training.stylenerf import Discriminator
     from torch_utils import misc
+    from training.networks import Generator
     with torch.no_grad():
         G2 = Generator(*G.init_args, **G.init_kwargs).to(device)
         misc.copy_params_and_buffers(G, G2, require_all=False)
@@ -137,18 +187,9 @@ def generate_images(ctx: click.Context,
         # misc.copy_params_and_buffers(D, D2, require_all=False)
     G2 = Renderer(G2, D, program=render_program)
 
+    network_pkl_name = network_pkl.split('/')[-1].split('.')[0]
     # Generate images.
     all_imgs = []
-
-    def stack_imgs(imgs):
-        img = torch.stack(imgs, dim=2)
-        return img.reshape(
-            img.size(0) * img.size(1),
-            img.size(2) * img.size(3), 3)
-
-    def proc_img(img):
-        return (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(
-            torch.uint8).cpu()
 
     if projected_w is not None:
         ws = np.load(projected_w)
@@ -158,7 +199,7 @@ def generate_images(ctx: click.Context,
                  noise_mode=noise_mode,
                  render_option=render_option)
         assert isinstance(img, List)
-        imgs = [proc_img(i) for i in img]
+        imgs = [proc_img(i, nrows) for i in img]
         all_imgs += [imgs]
 
     else:
@@ -167,13 +208,14 @@ def generate_images(ctx: click.Context,
                   (seed, seed_idx, len(seeds)))
             G2.set_random_seed(seed)
             z = torch.from_numpy(
-                np.random.RandomState(seed).randn(2, G.z_dim)).to(device)
+                np.random.RandomState(seed).randn(bz, G.z_dim)).to(device)
             relative_range_u = [
                 0.5 - 0.5 * relative_range_u_scale,
                 0.5 + 0.5 * relative_range_u_scale
             ]
             outputs = G2(z=z,
                          c=label,
+                         batch_size=bz,
                          truncation_psi=truncation_psi,
                          noise_mode=noise_mode,
                          render_option=render_option,
@@ -186,12 +228,16 @@ def generate_images(ctx: click.Context,
                 img = outputs
 
             if isinstance(img, List):
-                imgs = [proc_img(i) for i in img]
+                imgs = [proc_img(i, nrows) for i in img]
                 if not no_video:
                     all_imgs += [imgs]
 
-                curr_out_dir = os.path.join(outdir,
-                                            'seed_{:0>6d}'.format(seed))
+                proj_dir_name = (f'{network_pkl_name}-'
+                                 f'trunc_{truncation_psi:.2f}'
+                                 f'_seed_{seed:0>6d}-bz_{bz:0>2d}'
+                                 f'-n_steps_{n_steps:0>3d}')
+                curr_out_dir = os.path.join(outdir, render_program,
+                                            proj_dir_name)
                 os.makedirs(curr_out_dir, exist_ok=True)
 
                 if (render_option is not None) and ("gen_ibrnet_metadata"
@@ -226,34 +272,36 @@ def generate_images(ctx: click.Context,
 
                 img_dir = os.path.join(curr_out_dir, 'images_raw')
                 os.makedirs(img_dir, exist_ok=True)
-                for step, img in enumerate(imgs):
+                print(f'Saving Images for seed-\'{seed}\'...')
+                for step, img in enumerate(tqdm(imgs)):
                     PIL.Image.fromarray(
-                        img[0].detach().cpu().numpy(),
-                        'RGB').save(f'{img_dir}/{step:03d}.png')
-
+                        img, 'RGB').save(f'{img_dir}/{step:03d}.png')
             else:
                 img = proc_img(img)[0]
                 PIL.Image.fromarray(
                     img.numpy(), 'RGB').save(f'{outdir}/seed_{seed:0>6d}.png')
 
     if len(all_imgs) > 0 and (not no_video):
+        for idx, seed in enumerate(seeds):
+            all_frames = all_imgs[idx]
+            imageio.mimwrite(f'{curr_out_dir}/{network_pkl_name}_{seed}.mp4',
+                             all_frames,
+                             fps=30,
+                             quality=8)
         # write to video
-        timestamp = time.strftime('%Y%m%d.%H%M%S', time.localtime(time.time()))
-        seeds = ','.join([str(s) for s in seeds
-                          ]) if seeds is not None else 'projected'
-        network_pkl = network_pkl.split('/')[-1].split('.')[0]
-        all_imgs = [
-            stack_imgs([a[k] for a in all_imgs]).numpy()
-            for k in range(len(all_imgs[0]))
-        ]
-        imageio.mimwrite(f'{outdir}/{network_pkl}_{timestamp}_{seeds}.mp4',
-                         all_imgs,
-                         fps=30,
-                         quality=8)
-        outdir = f'{outdir}/{network_pkl}_{timestamp}_{seeds}'
-        os.makedirs(outdir, exist_ok=True)
-        for step, img in enumerate(all_imgs):
-            PIL.Image.fromarray(img, 'RGB').save(f'{outdir}/{step:04d}.png')
+        # seeds = ','.join([str(s) for s in seeds]) \
+        #     if seeds is not None else 'projected'
+        # all_imgs = [
+        #     stack_imgs([a[k] for a in all_imgs]).numpy()
+        #     for k in range(len(all_imgs[0]))
+        # ]
+        # all_imgs = [
+        #     make_grid(img, nrows).detach().cpu().numpy() for img in imgs
+        # ]
+        # imageio.mimwrite(f'{curr_out_dir}/{network_pkl_name}_{seeds}.mp4',
+        #                  all_imgs,
+        #                  fps=30,
+        #                  quality=8)
 
 
 # ----------------------------------------------------------------------------
