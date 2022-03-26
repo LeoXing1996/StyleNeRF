@@ -451,7 +451,7 @@ class CameraRay(object):
     depth_transform  = None     # "LogWarp" or "InverseWarp"
     dists_normalized = False    # use normalized interval instead of real dists
     random_rotate    = False
-    ray_align_corner = True
+    ray_align_corner = True     # NOTE: False in most of settings
 
     nonparam_cameras = None
 
@@ -479,12 +479,17 @@ class CameraRay(object):
         return vol_pixels, tgt_pixels
 
     def prepare_pixels_regularization(self, tgt_pixels, n_reg_samples):
+        """Select a group of points to calculate regularization -->
+        actually is a shifted downsample grid"""
         # only apply when size is bigger than voxel resolution
         pace = tgt_pixels.size(-1) // n_reg_samples
+        # 'idxs' are the index for a downsampled grid
         idxs = torch.arange(0, tgt_pixels.size(-1), pace, device=tgt_pixels.device)           # n_reg_samples
         u_xy = torch.rand(tgt_pixels.size(0), 2, device=tgt_pixels.device)
         u_xy = (u_xy * pace).floor().long()    # batch_size x 2
+        # x_idxs and y_idxs are shifted downsample grid
         x_idxs, y_idxs = idxs[None,:] + u_xy[:,:1], idxs[None,:] + u_xy[:,1:]
+        # get the index of the meshgrid with broadcast
         rand_indexs = (x_idxs[:,None,:] + y_idxs[:,:,None] * tgt_pixels.size(-1)).reshape(tgt_pixels.size(0), -1)
         tgt_pixels  = rearrange(tgt_pixels, 'b c h w -> b (h w) c')
         rand_pixels = tgt_pixels.gather(1, rand_indexs.unsqueeze(-1).repeat(1,1,2))
@@ -1005,8 +1010,20 @@ class VolumeRenderer(object):
                 H, fg_nerf, nerf_input_cams, nerf_input_feats, latent_codes, styles, output)
 
         # ------------------------------------------- PREPARE FULL OUTPUT (NO 2D aggregation) -------------------------------------------- #
+        # output:
+        # feat: [fg_feat, bg_feat], feature after volume rendering,
+        #   shape like [bz, n_pts+n_pts_rnd, n_dim+3]
+        # full_out: [fg_feat_full, bg_feat_full], feature before volume rendering
+        #   shape like [bz, n_pts+npts_rnd, n_smp, n_dim+3]
+        # bf_lambda: lambda to fuse foreground and background,
+        #   shape like [bz, n_pts+npts_rnd]
+        # fg_weights & bg_weights: weight in integration operation,
+        #   shape like [bz, n_pts+n_pts_rnd, n_smp]
+        # fg_depths & bg_depths: predicted depth,
+        #   shape like [bz, n_pts+n_pts_rnd, n_smp]
+
         vol_len   = vol_pixels.size(1)
-        feat_map  = sum(output.feat)
+        feat_map  = sum(output.feat)  # combine fg and bg feature (bg_feat had been multiplied with bg_lambda already)
         full_x    = rearrange(feat_map[:, :vol_len], 'b (h w) d -> b d h w', h=H.tgt_res)
         split_rgb = fg_nerf.add_rgb or fg_nerf.predict_rgb
 

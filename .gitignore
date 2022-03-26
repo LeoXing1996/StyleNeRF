@@ -26,3 +26,5 @@ flagged
 
 run_train.log
 runs/
+ckpt/
+render_out/
