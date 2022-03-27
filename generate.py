@@ -20,7 +20,7 @@ import imageio
 import numpy as np
 import PIL.Image
 import torch
-from torchvision.utils import make_grid as make_grid_off
+from torchvision.utils import make_grid
 from tqdm import tqdm
 
 import dnnlib
@@ -42,35 +42,26 @@ def num_range(s: str) -> List[int]:
     return [int(x) for x in vals]
 
 
-def get_factor_close_to_sqr(num):
-    sqr = int(math.sqrt(num))
+def float_range(s: str):
+    range_re = re.compile(r'^(\d+)-(\d+)$')
+    m = range_re.match(s)
+    if m:
+        return list(range(int(m.group(1)), int(m.group(2)) + 1))
+    vals = s.split(',')
+    return [float(x) for x in vals]
+
+
+def get_factor_close_to_sqr(num, factor):
+    sqr = math.ceil(math.sqrt(num))
     for n in range(sqr, 0, -1):
-        if num % n == 0:
+        if num % n == 0 and n % factor == 0:
             return n
 
 
-def make_grid(imgs, nrows=None, padding=2):
-    """Convert the input tensor to a grid
-    Args:
-        imgs (torch.Tensor): Tensor shape like ``[bz, H, W, 3]``.
-
-    Returns:
-        torch.Tensor: Image gird shape like
-    """
-    if nrows is None:
-        bz = imgs.size(0)
-        ncols = get_factor_close_to_sqr(bz)
-        # make `n_cols` larger than `nrows`
-        nrows = bz // ncols
-    grid = make_grid_off(imgs.permute(0, 3, 1, 2), nrows,
-                         padding=padding).permute(1, 2, 0)
-    return grid
-
-
-def proc_img(img, nrows=None, padding=2):
+def proc_img(img, nrows=None, padding=2, col_scale=1):
     if nrows is None:
         bz = img.size(0)
-        ncols = get_factor_close_to_sqr(bz)
+        ncols = get_factor_close_to_sqr(bz * col_scale, factor=col_scale)
         # make `n_cols` larger than `nrows`
         nrows = bz // ncols
 
@@ -78,7 +69,7 @@ def proc_img(img, nrows=None, padding=2):
     img = (img * 127.5 + 128).clamp(0, 255).to(torch.uint8)
 
     # make grid
-    img = make_grid_off(img, nrows, padding=padding).permute(1, 2, 0)
+    img = make_grid(img, nrows, padding=padding).permute(1, 2, 0)
     return img.cpu().numpy()
 
 
@@ -136,6 +127,15 @@ os.environ['PYOPENGL_PLATFORM'] = 'egl'
               default=1.0,
               type=float,
               help="relative scale on top of the original range u")
+@click.option('--res-scale',
+              type=float_range,
+              default=None,
+              help=('the scale of resolution to evaluate. sample from '
+                    '[res_scale[0] * curr_res, res_scale[1] * curr_res]'))
+@click.option('--num-res',
+              type=int,
+              default=1,
+              help='The number of resolution used in evaluation.')
 def generate_images(ctx: click.Context,
                     network_pkl: str,
                     seeds: Optional[List[int]],
@@ -150,7 +150,9 @@ def generate_images(ctx: click.Context,
                     render_option=None,
                     n_steps=8,
                     no_video=False,
-                    relative_range_u_scale=1.0):
+                    relative_range_u_scale=1.0,
+                    res_scale=None,
+                    num_res=1):
 
     device = torch.device('cuda')
     if os.path.isdir(network_pkl):
@@ -185,7 +187,15 @@ def generate_images(ctx: click.Context,
         misc.copy_params_and_buffers(G, G2, require_all=False)
         # D2 = Discriminator(*D.init_args, **D.init_kwargs).to(device)
         # misc.copy_params_and_buffers(D, D2, require_all=False)
-    G2 = Renderer(G2, D, program=render_program)
+
+    if (res_scale is None) or (num_res <= 1):
+        res_range = [1]
+    else:
+        assert len(res_scale) == 2
+        res_range = np.linspace(*res_scale, num=num_res).tolist()
+        if not (1 in res_range):
+            res_range = [1, *res_range]
+    G2 = Renderer(G2, D, program=render_program, res_range=res_range)
 
     network_pkl_name = network_pkl.split('/')[-1].split('.')[0]
     # Generate images.
@@ -228,7 +238,9 @@ def generate_images(ctx: click.Context,
                 img = outputs
 
             if isinstance(img, List):
-                imgs = [proc_img(i, nrows) for i in img]
+                imgs = [
+                    proc_img(i, nrows, col_scale=len(res_range)) for i in img
+                ]
                 if not no_video:
                     all_imgs += [imgs]
 
@@ -236,6 +248,9 @@ def generate_images(ctx: click.Context,
                                  f'trunc_{truncation_psi:.2f}'
                                  f'_seed_{seed:0>6d}-bz_{bz:0>2d}'
                                  f'-n_steps_{n_steps:0>3d}')
+                if len(res_range) > 1:
+                    proj_dir_name = proj_dir_name + f'-res_scale_{res_range}'
+
                 curr_out_dir = os.path.join(outdir, render_program,
                                             proj_dir_name)
                 os.makedirs(curr_out_dir, exist_ok=True)
@@ -288,20 +303,6 @@ def generate_images(ctx: click.Context,
                              all_frames,
                              fps=30,
                              quality=8)
-        # write to video
-        # seeds = ','.join([str(s) for s in seeds]) \
-        #     if seeds is not None else 'projected'
-        # all_imgs = [
-        #     stack_imgs([a[k] for a in all_imgs]).numpy()
-        #     for k in range(len(all_imgs[0]))
-        # ]
-        # all_imgs = [
-        #     make_grid(img, nrows).detach().cpu().numpy() for img in imgs
-        # ]
-        # imageio.mimwrite(f'{curr_out_dir}/{network_pkl_name}_{seeds}.mp4',
-        #                  all_imgs,
-        #                  fps=30,
-        #                  quality=8)
 
 
 # ----------------------------------------------------------------------------

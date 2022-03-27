@@ -11,7 +11,11 @@ import trimesh
 
 class Renderer(object):
 
-    def __init__(self, generator, discriminator=None, program=None):
+    def __init__(self,
+                 generator,
+                 discriminator=None,
+                 program=None,
+                 res_range=[1]):
         self.generator = generator
         self.discriminator = discriminator
         self.sample_tmp = 0.65
@@ -25,13 +29,22 @@ class Renderer(object):
         else:
             self.image_data = None
 
+        self.res_range = res_range
+        if self.res_range is not None:
+            self.res_range.sort()
+
     def set_random_seed(self, seed):
         self.seed = seed
         torch.manual_seed(seed)
         np.random.seed(seed)
 
+    @torch.no_grad()
     def __call__(self, *args, **kwargs):
         self.generator.eval()  # eval mode...
+
+        if len(self.res_range) > 1:
+            # resolution more than 1
+            return self.render_super_resolution(*args, **kwargs)
 
         if self.program is None:
             if hasattr(self.generator, 'get_final_output'):
@@ -100,12 +113,68 @@ class Renderer(object):
             raise NotImplementedError
         return cam
 
+    def _fill_on_canvas(self, img_list, canvas_size):
+        """The helper function to paste a image on a large canvas
+        Args:
+            img_list (list): A list of image generated with same latent code
+                and different camera parameters.
+            canvas_size (int): The size of the canvas. We only support square
+                canvas.
+
+        Returns:
+            torch.Tensor: Image tensor pasted on a large canvas.
+        """
+        bz, res = img_list[0].size(0), img_list[0].size(-1)
+        canvas_shape = [bz, 3, canvas_size, canvas_size]
+
+        s_idx = (canvas_size - res) // 2
+        img_list_new = []
+
+        for img in img_list:
+            canvas = torch.zeros(*canvas_shape)
+            canvas[..., s_idx:s_idx + res, s_idx:s_idx + res] = img.cpu()
+            img_list_new.append(canvas)
+
+        return img_list_new
+
     def render_super_resolution(self, *args, **kwargs):
         """Render with image-plane super resolution"""
-        batch_size, n_steps = kwargs['batch_size'], kwargs["n_steps"]
         gen = self.generator.synthesis
 
-        pass
+        curr_res = gen.img_resolution
+        vol_res = gen.resolution_vol
+        canavs_size = int(max(self.res_range) * curr_res)
+
+        out_dict = dict()
+        for res_scale in self.res_range:
+            # avoid forward same resolution duplicate times
+            if res_scale in out_dict:
+                continue
+
+            gen.resolution_vol = int(res_scale * vol_res)
+            out = getattr(self, f"render_{self.program}")(*args, **kwargs)
+
+            if isinstance(out, tuple):
+                img, cam = out
+                out_dict['camera'] = cam
+            else:
+                img = out
+            img = self._fill_on_canvas(img, canavs_size)
+            out_dict[res_scale] = img
+
+            torch.cuda.empty_cache()
+
+        # cat put one res at the same row
+        img_list = []
+        for step in range(len(img)):
+            # concencate at column dimension
+            img_comb = torch.cat(
+                [out_dict[res][step] for res in self.res_range], dim=-1)
+            img_list.append(img_comb)
+
+        if 'camera' in out_dict:
+            return img_list, out_dict['camera']
+        return img_list
 
     def render_rotation_camera(self, *args, **kwargs):
         batch_size, n_steps = kwargs['batch_size'], kwargs["n_steps"]
