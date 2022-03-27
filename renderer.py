@@ -3,10 +3,12 @@
 import copy
 
 import numpy as np
+import PIL
 import torch
 import torch.nn.functional as F
 import tqdm
 import trimesh
+from PIL import Image
 
 
 class Renderer(object):
@@ -15,7 +17,8 @@ class Renderer(object):
                  generator,
                  discriminator=None,
                  program=None,
-                 res_range=[1]):
+                 res_range=[1],
+                 save_resample=False):
         self.generator = generator
         self.discriminator = discriminator
         self.sample_tmp = 0.65
@@ -32,6 +35,7 @@ class Renderer(object):
         self.res_range = res_range
         if self.res_range is not None:
             self.res_range.sort()
+        self.save_resample = save_resample
 
     def set_random_seed(self, seed):
         self.seed = seed
@@ -137,15 +141,57 @@ class Renderer(object):
 
         return img_list_new
 
+    def _fill_with_resample(self, img_list, canvas_size, resample):
+        """
+        resample (): The resample method to be used.
+        """
+        img_list_new = []
+
+        def tensor_to_pil(tensor, tar_size=None):
+            """ tensor: [bz, 3, H, W]"""
+            pil_list = []
+            for idx in range(tensor.size(0)):
+                img_ten = (tensor[idx] * 127.5 + 128).clamp(0, 255).to(
+                    torch.uint8)
+                img_np = img_ten.permute(1, 2, 0).cpu().numpy()
+                img_pil = Image.fromarray(img_np)
+                if tar_size is not None:
+                    img_pil = img_pil.resize((tar_size, tar_size), resample)
+                pil_list.append(img_pil)
+            return pil_list
+
+        def pil_to_tensor(pil):
+            tensor_list = []
+            for img in pil:
+                img_np = (np.array(img) - 127.5) / 127.5
+                img_ten = torch.from_numpy(img_np).permute(2, 0, 1)
+                tensor_list.append(img_ten)
+            return torch.stack(tensor_list, 0)
+
+        for img in img_list:
+            # cvt img to pil
+            pils_resize = tensor_to_pil(img, canvas_size)
+            tens = pil_to_tensor(pils_resize)
+            img_list_new.append(tens)
+
+        return img_list_new
+
     def render_super_resolution(self, *args, **kwargs):
         """Render with image-plane super resolution"""
+
         gen = self.generator.synthesis
+
+        save_resample = self.save_resample
+        resample = {
+            'box': PIL.Image.BOX,
+            'lanczos': PIL.Image.LANCZOS
+        }[kwargs.get('resample_fn', 'lanczos')]
 
         curr_res = gen.img_resolution
         vol_res = gen.resolution_vol
         canavs_size = int(max(self.res_range) * curr_res)
 
-        out_dict = dict()
+        out_dict, out_dict_resample = dict(), dict()
         for res_scale in self.res_range:
             # avoid forward same resolution duplicate times
             if res_scale in out_dict:
@@ -159,22 +205,33 @@ class Renderer(object):
                 out_dict['camera'] = cam
             else:
                 img = out
-            img = self._fill_on_canvas(img, canavs_size)
-            out_dict[res_scale] = img
+            img_canvas = self._fill_on_canvas((img), canavs_size)
+            out_dict[res_scale] = img_canvas
+
+            if save_resample:
+                img_resample = self._fill_with_resample(
+                    img, curr_res, resample)
+                out_dict_resample[res_scale] = img_resample
 
             torch.cuda.empty_cache()
 
         # cat put one res at the same row
-        img_list = []
+        img_list, img_list_resample = [], []
         for step in range(len(img)):
             # concencate at column dimension
             img_comb = torch.cat(
                 [out_dict[res][step] for res in self.res_range], dim=-1)
             img_list.append(img_comb)
 
+            if out_dict_resample:
+                img_resample_comb = torch.cat(
+                    [out_dict_resample[res][step] for res in self.res_range],
+                    dim=-1)
+                img_list_resample.append(img_resample_comb)
+
         if 'camera' in out_dict:
-            return img_list, out_dict['camera']
-        return img_list
+            return img_list, img_list_resample, out_dict['camera']
+        return img_list, img_list_resample
 
     def render_rotation_camera(self, *args, **kwargs):
         batch_size, n_steps = kwargs['batch_size'], kwargs["n_steps"]

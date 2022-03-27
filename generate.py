@@ -9,6 +9,7 @@
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 """Generate images using pretrained network pickle."""
 
+from functools import partial
 import glob
 import math
 import os
@@ -71,6 +72,16 @@ def proc_img(img, nrows=None, padding=2, col_scale=1):
     # make grid
     img = make_grid(img, nrows, padding=padding).permute(1, 2, 0)
     return img.cpu().numpy()
+
+
+def proc_and_save(img_list, img_dir, proc_fn):
+
+    imgs = [proc_fn(img) for img in img_list]
+
+    os.makedirs(img_dir, exist_ok=True)
+    for step, img in enumerate(tqdm(imgs)):
+        PIL.Image.fromarray(img, 'RGB').save(f'{img_dir}/{step:03d}.png')
+    return imgs
 
 
 # ----------------------------------------------------------------------------
@@ -136,6 +147,9 @@ os.environ['PYOPENGL_PLATFORM'] = 'egl'
               type=int,
               default=1,
               help='The number of resolution used in evaluation.')
+@click.option('--save-resample',
+              is_flag=True,
+              help='The number of resolution used in evaluation.')
 def generate_images(ctx: click.Context,
                     network_pkl: str,
                     seeds: Optional[List[int]],
@@ -152,7 +166,8 @@ def generate_images(ctx: click.Context,
                     no_video=False,
                     relative_range_u_scale=1.0,
                     res_scale=None,
-                    num_res=1):
+                    num_res=1,
+                    save_resample=False):
 
     device = torch.device('cuda')
     if os.path.isdir(network_pkl):
@@ -195,19 +210,25 @@ def generate_images(ctx: click.Context,
         res_range = np.linspace(*res_scale, num=num_res).tolist()
         if not (1 in res_range):
             res_range = [1, *res_range]
-    G2 = Renderer(G2, D, program=render_program, res_range=res_range)
+    G2 = Renderer(G2,
+                  D,
+                  program=render_program,
+                  res_range=res_range,
+                  save_resample=save_resample)
 
     network_pkl_name = network_pkl.split('/')[-1].split('.')[0]
     # Generate images.
     all_imgs = []
+    all_imgs_resample = []
 
     if projected_w is not None:
         ws = np.load(projected_w)
         ws = torch.tensor(ws, device=device)  # pylint: disable=not-callable
-        img = G2(styles=ws,
-                 truncation_psi=truncation_psi,
-                 noise_mode=noise_mode,
-                 render_option=render_option)
+        img = G2(
+            styles=ws,
+            truncation_psi=truncation_psi,
+            noise_mode=noise_mode,
+            render_option=render_option)
         assert isinstance(img, List)
         imgs = [proc_img(i, nrows) for i in img]
         all_imgs += [imgs]
@@ -233,76 +254,83 @@ def generate_images(ctx: click.Context,
                          relative_range_u=relative_range_u,
                          return_cameras=True)
             if isinstance(outputs, tuple):
-                img, cameras = outputs
+                if len(outputs) == 3:
+                    img, img_resample, cameras = outputs
+                else:
+                    img, cameras = outputs
+                    img_resample = None
             else:
                 img = outputs
+                img_resample = None
 
-            if isinstance(img, List):
-                imgs = [
-                    proc_img(i, nrows, col_scale=len(res_range)) for i in img
-                ]
+            # get folder
+            proj_dir_name = (f'{network_pkl_name}-'
+                             f'trunc_{truncation_psi:.2f}'
+                             f'_seed_{seed:0>6d}-bz_{bz:0>2d}'
+                             f'-n_steps_{n_steps:0>3d}')
+            if len(res_range) > 1:
+                proj_dir_name = proj_dir_name + f'-res_scale_{res_range}'
+
+            curr_out_dir = os.path.join(outdir, render_program, proj_dir_name)
+            os.makedirs(curr_out_dir, exist_ok=True)
+
+            # save render options
+            if (render_option is not None) and ("gen_ibrnet_metadata"
+                                                in render_option):
+                intrinsics = []
+                poses = []
+                _, H, W, _ = imgs[0].shape
+                for i, camera in enumerate(cameras):
+                    intri, pose, _, _ = camera
+                    focal = (H - 1) * 0.5 / intri[0, 0, 0].item()
+                    intri = np.diag([focal, focal, 1.0,
+                                     1.0]).astype(np.float32)
+                    intri[0, 2], intri[1, 2] = (W - 1) * 0.5, (H - 1) * 0.5
+
+                    pose = pose.squeeze().detach().cpu().numpy() @ np.diag(
+                        [1, -1, -1, 1]).astype(np.float32)
+                    intrinsics.append(intri)
+                    poses.append(pose)
+
+                intrinsics = np.stack(intrinsics, axis=0)
+                poses = np.stack(poses, axis=0)
+
+                np.savez(os.path.join(curr_out_dir, 'cameras.npz'),
+                         intrinsics=intrinsics,
+                         poses=poses)
+                with open(os.path.join(curr_out_dir, 'meta.conf'), 'w') as f:
+                    f.write('depth_range = '
+                            f'{G2.generator.synthesis.depth_range}\n'
+                            f'test_hold_out = 2\n'
+                            f'height = {H}\nwidth = {W}')
+
+            # save img list
+            proc_fn = partial(proc_img, nrows=nrows, col_scale=len(res_range))
+            img_dir = os.path.join(curr_out_dir, 'images_raw')
+            imgs = proc_and_save(img, img_dir, proc_fn)
+            if not no_video:
+                all_imgs += [imgs]
+
+            # handle img resample
+            if img_resample:
+                img_resample_dir = os.path.join(curr_out_dir,
+                                                'images_resample')
+                imgs_resample = proc_and_save(img_resample, img_resample_dir,
+                                              proc_fn)
                 if not no_video:
-                    all_imgs += [imgs]
-
-                proj_dir_name = (f'{network_pkl_name}-'
-                                 f'trunc_{truncation_psi:.2f}'
-                                 f'_seed_{seed:0>6d}-bz_{bz:0>2d}'
-                                 f'-n_steps_{n_steps:0>3d}')
-                if len(res_range) > 1:
-                    proj_dir_name = proj_dir_name + f'-res_scale_{res_range}'
-
-                curr_out_dir = os.path.join(outdir, render_program,
-                                            proj_dir_name)
-                os.makedirs(curr_out_dir, exist_ok=True)
-
-                if (render_option is not None) and ("gen_ibrnet_metadata"
-                                                    in render_option):
-                    intrinsics = []
-                    poses = []
-                    _, H, W, _ = imgs[0].shape
-                    for i, camera in enumerate(cameras):
-                        intri, pose, _, _ = camera
-                        focal = (H - 1) * 0.5 / intri[0, 0, 0].item()
-                        intri = np.diag([focal, focal, 1.0,
-                                         1.0]).astype(np.float32)
-                        intri[0, 2], intri[1, 2] = (W - 1) * 0.5, (H - 1) * 0.5
-
-                        pose = pose.squeeze().detach().cpu().numpy() @ np.diag(
-                            [1, -1, -1, 1]).astype(np.float32)
-                        intrinsics.append(intri)
-                        poses.append(pose)
-
-                    intrinsics = np.stack(intrinsics, axis=0)
-                    poses = np.stack(poses, axis=0)
-
-                    np.savez(os.path.join(curr_out_dir, 'cameras.npz'),
-                             intrinsics=intrinsics,
-                             poses=poses)
-                    with open(os.path.join(curr_out_dir, 'meta.conf'),
-                              'w') as f:
-                        f.write('depth_range = '
-                                f'{G2.generator.synthesis.depth_range}\n'
-                                f'test_hold_out = 2\n'
-                                f'height = {H}\nwidth = {W}')
-
-                img_dir = os.path.join(curr_out_dir, 'images_raw')
-                os.makedirs(img_dir, exist_ok=True)
-                print(f'Saving Images for seed-\'{seed}\'...')
-                for step, img in enumerate(tqdm(imgs)):
-                    PIL.Image.fromarray(
-                        img, 'RGB').save(f'{img_dir}/{step:03d}.png')
-            else:
-                img = proc_img(img)[0]
-                PIL.Image.fromarray(
-                    img.numpy(), 'RGB').save(f'{outdir}/seed_{seed:0>6d}.png')
+                    all_imgs_resample += [imgs_resample]
 
     if len(all_imgs) > 0 and (not no_video):
         for idx, seed in enumerate(seeds):
             all_frames = all_imgs[idx]
-            imageio.mimwrite(f'{curr_out_dir}/{network_pkl_name}_{seed}.mp4',
-                             all_frames,
-                             fps=30,
-                             quality=8)
+            vid_name = f'{curr_out_dir}/{network_pkl_name}_{seed}.mp4'
+            imageio.mimwrite(vid_name, all_frames, fps=30, quality=8)
+
+    if len(all_imgs_resample) > 0 and (not no_video):
+        for idx, seed in enumerate(seeds):
+            all_frames = all_imgs_resample[idx]
+            vid_name = f'{curr_out_dir}/{network_pkl_name}_{seed}_resample.mp4'
+            imageio.mimwrite(vid_name, all_frames, fps=30, quality=8)
 
 
 # ----------------------------------------------------------------------------
