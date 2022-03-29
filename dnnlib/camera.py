@@ -281,6 +281,49 @@ def arange_pixels(resolution=(128, 128),
     return pixel_scaled
 
 
+def arange_pixels_rescale(resolution=(128, 128),
+                          cent_range=None,
+                          size_range=None,
+                          batch_size=1,
+                          invert_y_axis=False,
+                          margin=0,
+                          corner_aligned=True):
+    """NOTE: functio add by us, generate a pixels which at a sub region
+    Args:
+        cent_range: The range for the center of the sub region
+        size_range: The range for the sub region
+    """
+
+    def rescale_to_range(val, rng):
+        return val * (rng[1] - rng[0]) + rng[0]
+
+    h, w = resolution
+    # uh = 1 if corner_aligned else 1 - (1 / h)
+    # uw = 1 if corner_aligned else 1 - (1 / w)
+
+    cent = rescale_to_range(torch.rand(batch_size, 2), cent_range)
+    size = rescale_to_range(torch.rand(batch_size, 1), size_range)
+
+    coord_list = []
+    for idx in range(batch_size):
+        cent_h, cent_w = cent[idx]
+        size_ = size[idx]
+        # TODO: here we may handle corner_align
+        x_rng = torch.linspace([cent_w - size_, cent_w + size_, w])
+        y_rng = torch.linspace([cent_h - size_, cent_h + size_, h])
+        x_idx, y_idx = torch.meshgrid(x_rng, y_rng)
+        coord = torch.stack([x_idx, y_idx],
+                            dim=-1).permute(1, 0, 2).reshape(1, -1, 2)
+        coord_list.append(coord)
+
+    pixel_scaled = torch.cat(coord_list, 0)
+
+    if invert_y_axis:
+        pixel_scaled[..., -1] *= -1
+
+    return pixel_scaled
+
+
 def to_pytorch(tensor, return_type=False):
     ''' Converts input tensor to pytorch.
 
@@ -305,7 +348,8 @@ def transform_to_world(pixels,
                        scale_mat=None,
                        invert=True,
                        use_absolute_depth=True):
-    ''' Transforms pixel positions p with given depth value d to world coordinates.
+    ''' Transforms pixel positions p with given depth value d to
+    world coordinates.
 
     Args:
         pixels (tensor): pixel tensor of size B x N x 2

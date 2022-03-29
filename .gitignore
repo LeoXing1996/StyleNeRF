@@ -3,6 +3,7 @@ __pycache__/
 datasets/
 outputs/
 out/
+out
 out2/
 debug/
 checkpoint/
@@ -28,3 +29,4 @@ run_train.log
 runs/
 ckpt/
 render_out/
+render_out

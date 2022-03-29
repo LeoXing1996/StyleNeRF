@@ -141,7 +141,11 @@ class Renderer(object):
 
         return img_list_new
 
-    def _fill_with_resample(self, img_list, canvas_size, resample):
+    def _fill_with_resample(self,
+                            img_list,
+                            canvas_size,
+                            resample,
+                            backend='pt'):
         """
         resample (): The resample method to be used.
         """
@@ -168,10 +172,16 @@ class Renderer(object):
                 tensor_list.append(img_ten)
             return torch.stack(tensor_list, 0)
 
+        def resize_pt(ten, tar_size):
+            # default as nearest
+            return F.upsample(img, size=tar_size)
+
         for img in img_list:
-            # cvt img to pil
-            pils_resize = tensor_to_pil(img, canvas_size)
-            tens = pil_to_tensor(pils_resize)
+            if backend == 'pil':
+                pils_resize = tensor_to_pil(img, canvas_size)
+                tens = pil_to_tensor(pils_resize)
+            else:
+                tens = resize_pt(img, canvas_size)
             img_list_new.append(tens)
 
         return img_list_new
