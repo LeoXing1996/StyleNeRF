@@ -119,6 +119,7 @@ def training_loop(
     generation_with_image=False,  # (optional) For each random z, you also sample an image associated with it.  # noqa
     slurm=False,
     petrel_mapping=None,
+    n_vis_scale=None,
     **unused,
 ):
     # Initialize.
@@ -260,7 +261,7 @@ def training_loop(
     if rank == 0:
         print('Setting up training phases...')
     loss = dnnlib.util.construct_class_by_name(
-        device=device, **ddp_modules,
+        device=device, G_ema=G_ema, **ddp_modules,
         **loss_kwargs)  # subclass of training.loss.Loss
 
     phases = []
@@ -300,6 +301,16 @@ def training_loop(
                                 opt=opt,
                                 interval=reg_interval,
                                 scaler=None)
+            ]
+        # NOTE: code add by us --> add SR phase
+        if name == 'G' and G.synthesis.super_resolution_reg:
+            phases += [
+                dnnlib.EasyDict(name=name + 'sr',
+                                module=module,
+                                opt=opt,
+                                interval=1,
+                                scaler=None,
+                                start=False)
             ]
 
     for phase in phases:
@@ -391,6 +402,7 @@ def training_loop(
     while True:
         # set number of images
         loss.set_alpha(cur_nimg)
+        loss.set_sr_scale(cur_nimg)
         curr_res = loss.resolution
 
         # Estimating Cameras for the training set (optional)
@@ -436,6 +448,16 @@ def training_loop(
         # Execute training phases.
         for phase, phase_gen_z, phase_gen_c, phase_gen_img in zip(
                 phases, all_gen_z, all_gen_c, all_gen_img):
+
+            # NOTE: code add by us ---> skip SR is necessary
+            if loss.skip(phase.name):
+                print(f'skip {phase.name}: {loss.steps}')
+                continue
+            else:
+                print(f'do not skip {phase.name}: {loss.steps}')
+            if hasattr(phase, 'start'):
+                phase.start = True
+
             if batch_idx % phase.interval != 0:
                 continue
 
@@ -527,7 +549,8 @@ def training_loop(
         done = (cur_nimg >= total_kimg * 1000)
         if (not done) and (cur_tick != 0) and (
                 cur_nimg < tick_start_nimg + kimg_per_tick * 1000):
-            continue
+            pass
+            # continue
 
         # Print status line, accumulating the same information in stats_collector.  # noqa
         tick_end_time = time.time()
@@ -536,7 +559,7 @@ def training_loop(
             f"tick {training_stats.report0('Progress/tick', cur_tick):<5d}"
         ]
         fields += [
-            f"kimg {training_stats.report0('Progress/kimg', cur_nimg / 1e3):<8.1f}"   # noqa
+            f"kimg {training_stats.report0('Progress/kimg', cur_nimg / 1e3):<8.1f}"  # noqa
         ]
         if loss.alpha is not None:
             fields += [
@@ -544,6 +567,10 @@ def training_loop(
             ]
             fields += [
                 f"res {training_stats.report0('Progress/res', loss.resolution):<5d}"  # noqa
+            ]
+        if loss.sr_scale is not None:
+            fields += [
+                f"sr_scale {training_stats.report0('Progress/sr_scale', loss.sr_scale):<8.5f}"  # noqa
             ]
         fields += [
             f"time {dnnlib.util.format_time(training_stats.report0('Timing/total_sec', tick_end_time - start_time)):<12s}"  # noqa
@@ -606,6 +633,7 @@ def training_loop(
                                 grid_size=grid_size,
                                 client=client)
 
+                # camera_mode = [0.5, 0.5, 0.5] --> generate centeriod image
                 images = torch.cat([
                     G_ema.get_final_output(z=z,
                                            c=c,
@@ -621,6 +649,24 @@ def training_loop(
                                 drange=[-1, 1],
                                 grid_size=grid_size,
                                 client=client)
+                # generate a super resolution grid
+                if G.use_SR:
+                    # here we assum we only generate image with the highest
+                    # resolution
+                    images = torch.cat([
+                        G_ema.forward_SR(z=z,
+                                         c=c,
+                                         noise_mode='const',
+                                         img=img,
+                                         camera_mode=[0.5, 0.5, 0.5])[0].cpu()
+                        for z, c, img in zip(grid_z, grid_c, grid_i)
+                    ]).numpy()
+                    sr_file_name = f'fakes{cur_nimg//1000:06d}_SR.png'
+                    save_image_grid(images,
+                                    os.path.join(img_dir, sr_file_name),
+                                    drange=[-1, 1],
+                                    grid_size=grid_size,
+                                    client=client)
 
         # Save network snapshot.
         snapshot_pkl = None
@@ -679,6 +725,8 @@ def training_loop(
             value = []
             if (phase.start_event is not None) and (phase.end_event
                                                     is not None):
+                if hasattr(phase, 'start') and not phase.start:
+                    continue
                 phase.end_event.synchronize()
                 value = phase.start_event.elapsed_time(phase.end_event)
             training_stats.report0('Timing/' + phase.name, value)

@@ -52,7 +52,10 @@ class StyleGAN2Loss(Loss):
                  alpha_start=0.0,
                  cycle_consistency=False,
                  label_smooth=0,
-                 generator_mode='random_z_random_c'):
+                 generator_mode='random_z_random_c',
+                 sr_curriculum=None,
+                 sr_scale_end=2.,
+                 G_ema=None):
 
         super().__init__()
         self.device = device
@@ -72,6 +75,12 @@ class StyleGAN2Loss(Loss):
         self.curriculum = curriculum
         self.alpha_start = alpha_start
         self.alpha = None
+
+        self.sr_curriculum = sr_curriculum
+        self.sr_scale_end = sr_scale_end
+        self.sr_scale = None
+        self.G_ema = G_ema
+
         self.cycle_consistency = cycle_consistency
         self.label_smooth = label_smooth
         self.generator_mode = generator_mode
@@ -110,10 +119,45 @@ class StyleGAN2Loss(Loss):
         if self.G_encoder is not None:
             self.G_encoder.apply(_apply)
 
-    def run_G(self, z, c, sync, img=None, mode=None, get_loss=True):
-        print(f'RUN_G: mode-{mode}')
+    def set_sr_scale(self, steps):
+        """NOTE: function add by us, set super resolution for ours"""
+        sr_scale = None
+        if self.sr_curriculum is not None and self.sr_curriculum != 'None':
+            start, end = self.sr_curriculum
+            alpha = min(1., max(0., (steps / 1e3 - start) / (end - start)))
+            if self.sr_scale_end is not None and self.sr_scale_end > 1:
+                sr_scale = 1 + (self.sr_scale_end - 1) * alpha
+        self.sr_scale = sr_scale
+
+        def _apply(m):
+            if hasattr(m, 'set_SR_scale') and m != self:
+                m.set_SR_scale(sr_scale)
+
+        self.G_synthesis.apply(_apply)
+        if self.G_ema is not None:
+            self.G_ema.apply(_apply)
+
+    def run_G(self,
+              z,
+              c,
+              sync,
+              img=None,
+              mode=None,
+              get_loss=True,
+              forward_sr=False):
+        # print(f'RUN_G: mode-{mode}')
         synthesis_kwargs = {'camera_mode': 'random'}
         generator_mode = self.generator_mode if mode is None else mode
+
+        if forward_sr:
+            with misc.ddp_sync(self.G_mapping, sync):
+                ws = self.G_mapping(z, c)
+            with misc.ddp_sync(self.G_synthesis, sync):
+                out = self.G_synthesis.forward_SR_img(ws,
+                                                      downsample=True,
+                                                      **synthesis_kwargs)
+            print(out[-1].shape)
+            return out[-1]
 
         if (generator_mode == 'image_z_random_c') or (generator_mode
                                                       == 'image_z_image_c'):
@@ -134,8 +178,8 @@ class StyleGAN2Loss(Loss):
                 out['consist_lpips_loss'] = self.lpips_loss(
                     out['img'], img['img']) * 10.0  # TODO: DEBUG
 
-        elif ((generator_mode == 'random_z_random_c') or
-              (generator_mode == 'random_z_image_c')):
+        elif ((generator_mode == 'random_z_random_c')
+              or (generator_mode == 'random_z_image_c')):
             with misc.ddp_sync(self.G_mapping, sync):
                 ws = self.G_mapping(z, c)
                 if self.style_mixing_prob > 0:
@@ -197,6 +241,14 @@ class StyleGAN2Loss(Loss):
     def resolution(self):
         return misc.get_func(self.G_synthesis, 'get_current_resolution')()[-1]
 
+    def skip(self, phase):
+        """NOTE: function add by us, skip the SR loss """
+        if phase == 'Gsr' and not self.G_synthesis.SR_started:
+            return True
+        if phase == 'Gsr':
+            print(f'Not skip, scale: {self.G_synthesis.sr_scale}')
+        return False
+
     def accumulate_gradients(self,
                              phase,
                              real_img,
@@ -207,11 +259,17 @@ class StyleGAN2Loss(Loss):
                              sync,
                              gain,
                              scaler=None):
-        assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
+        assert phase in [
+            'Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth', 'Gsr', 'Dsr'
+        ]
         do_Gmain = (phase in ['Gmain', 'Gboth'])
         do_Dmain = (phase in ['Dmain', 'Dboth'])
         do_Gpl = (phase in ['Greg', 'Gboth'])
         do_Dr1 = (phase in ['Dreg', 'Dboth'])
+
+        do_Gsr = (phase in ['Gsr'])
+        do_Dsr = (phase in ['Dsr'])
+
         losses = {}
 
         # Gmain: Maximize logits for generated images.
@@ -263,10 +321,13 @@ class StyleGAN2Loss(Loss):
                 with torch.autograd.profiler.record_function(
                         'pl_grads'), conv2d_gradfix.no_weight_gradients():
                     # with torch.autograd.profiler.record_function('pl_grads'):
-                    pl_grads = torch.autograd.grad(
-                        outputs=[(gen_img * pl_noise).sum()],
-                        inputs=[gen_ws], create_graph=True,
-                        only_inputs=True, allow_unused=True)[0]
+                    pl_grads = torch.autograd.grad(outputs=[
+                        (gen_img * pl_noise).sum()
+                    ],
+                                                   inputs=[gen_ws],
+                                                   create_graph=True,
+                                                   only_inputs=True,
+                                                   allow_unused=True)[0]
                 pl_lengths = pl_grads.square().sum(2).mean(1).sqrt()
                 pl_mean = self.pl_mean.lerp(pl_lengths.mean(), self.pl_decay)
                 self.pl_mean.copy_(pl_mean.detach())
@@ -280,6 +341,35 @@ class StyleGAN2Loss(Loss):
                                  loss_Gpl).mean().mul(gain)
                 loss = scaler.scale(
                     losses['Gpl']) if scaler is not None else losses['Gpl']
+                loss.backward()
+
+        if do_Gsr and self.G_synthesis.SR_started:
+            with torch.autograd.profiler.record_function('Gsr_forward'):
+                gen_img = self.run_G(gen_z,
+                                     gen_c,
+                                     sync=(sync and not do_Gpl),
+                                     forward_sr=True)
+                reg_loss += self.get_loss(gen_img, 'G')
+                gen_sr_logits = self.run_D(gen_img, gen_c, sync=False)
+                if isinstance(gen_sr_logits, dict):
+                    gen_sr_logits = gen_sr_logits['logits']
+
+                loss_Gsr = torch.nn.functional.softplus(
+                    -gen_sr_logits)  # -log(sigmoid(gen_logits))
+
+                if self.label_smooth > 0:
+                    loss_Gsr = loss_Gsr * (
+                        1 - self.label_smooth) + torch.nn.functional.softplus(
+                            gen_sr_logits) * self.label_smooth
+
+                # handle sr output
+                training_stats.report('Loss/score/fake_sr', gen_sr_logits)
+                training_stats.report('Loss/G/loss_sr', loss_Gsr)
+
+            with torch.autograd.profiler.record_function('Gsr_backward'):
+                losses['Gsr'] = loss_Gsr.mean().mul(gain)
+                loss = scaler.scale(
+                    losses['Gsr']) if scaler is not None else losses['Gsr']
                 loss.backward()
 
         # Dmain: Minimize logits for generated images.
@@ -358,6 +448,24 @@ class StyleGAN2Loss(Loss):
                 loss = scaler.scale(
                     losses['Dr1']) if scaler is not None else losses['Dr1']
                 loss.backward()
+
+        # if do_Dsr:
+        #     with torch.autograd.profiler.record_function('Dsr_forward'):
+        #         gen_img = self.run_G(gen_z, gen_c, sync=False, img=fake_img)[0]
+        #         gen_sr_logits = self.run_D(gen_img, gen_c, sync=False)
+        #         if isinstance(gen_sr_logits, dict):
+        #             gen_sr_logits = gen_sr_logits['logits']
+
+        #         loss_Dsr = torch.nn.functional.softplus(
+        #             gen_sr_logits)  # -log(1 - sigmoid(gen_logits))
+        #         training_stats.report('Loss/scores/fake_sr', gen_sr_logits)
+        #         training_stats.report('Loss/D_sr/loss', loss_Dsr.mean())
+
+        #     with torch.autograd.profiler.record_function('Dsr_backward'):
+        #         losses['Dsr'] = loss_Dsr.mean().mul(gain)
+        #         loss = scaler.scale(
+        #             losses['Dsr']) if scaler is not None else losses['Dsr']
+        #         loss.backward()
 
         return losses
 

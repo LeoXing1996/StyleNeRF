@@ -84,6 +84,9 @@ G_kwargs:
         n_reg_samples: 16
         reg_full: True
 
+        # sr reuglarization
+        super_resolution_reg: True
+
 D_kwargs:
     class_name: "training.stylenerf.Discriminator"
     epilogue_kwargs:
@@ -105,4 +108,6 @@ loss_kwargs:
     pl_decay: 0.01
     pl_weight: 2
     style_mixing_prob: 0.9
-    curriculum: [500, 5000]
+    curriculum: [0.1, 0.2] # [500, 5000]
+    sr_curriculum: [0.21, 0.3]  # [5000, 10000]
+    sr_scale_end: 2  # [1.5]

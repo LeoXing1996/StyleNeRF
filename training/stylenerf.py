@@ -6,6 +6,7 @@ from email import generator
 import imp
 import math
 from platform import architecture
+from numpy import arange
 
 
 import torch
@@ -495,6 +496,31 @@ class CameraRay(object):
         rand_pixels = tgt_pixels.gather(1, rand_indexs.unsqueeze(-1).repeat(1,1,2))
         return rand_pixels, rand_indexs
 
+    def prepare_pixels_sub_region(self, vol_res, cent_range, size_range, camera_matrices):
+        """NOTE: function add by us, calculate a pixel plane for a sub area
+        """
+        device = camera_matrices[0].device
+        batch_size = camera_matrices[0].shape[0]
+        sub_pixels = arange_pixels_rescale((vol_res, vol_res),
+                                           cent_range=cent_range,
+                                           size_range=size_range,
+                                           batch_size=batch_size,
+                                           invert_y_axis=True,
+                                           corner_aligned=False).to(device)
+        return sub_pixels
+
+    def prepare_pixels_SR(self, vol_res, scale, camera_matrices):
+        """NOTE: function add by us, create a dense image plane"""
+        device = camera_matrices[0].device
+        batch_size = camera_matrices[0].shape[0]
+        new_vol_res = int(vol_res * scale)
+        if new_vol_res == vol_res:
+            return None
+        full_pixels = arange_pixels((new_vol_res, new_vol_res),
+            batch_size, invert_y_axis=True, margin=0,
+            corner_aligned=False).to(device)
+        return full_pixels
+
     def get_roll(self, ws, training=True, theta=None, **unused):
         if (self.random_rotate is not None) and training:
             theta = torch.randn(ws.size(0)).to(ws.device) * self.random_rotate / 2
@@ -649,6 +675,7 @@ class CameraRay(object):
             batch_size, invert_y_axis=invert_y, margin=margin,
             corner_aligned=corner_aligned).to(device)
         if (theta is not None):
+            # apply rotation matrix
             theta = theta.unsqueeze(-1)
             x = full_pixels[..., 0] * torch.cos(theta) - full_pixels[..., 1] * torch.sin(theta)
             y = full_pixels[..., 0] * torch.sin(theta) + full_pixels[..., 1] * torch.cos(theta)
@@ -818,16 +845,18 @@ class VolumeRenderer(object):
         output.fg_depths  = (di, di_trs)
         return output
 
-    def forward_rendering(self, H, output, fg_nerf, nerf_input_cams, nerf_input_feats, latent_codes, styles):
+    def forward_rendering(self, H, output, fg_nerf, nerf_input_cams, nerf_input_feats, latent_codes, styles, n_points=None):
         pixels_world, camera_world, ray_vector = nerf_input_cams
         z_shape_obj, z_app_obj = latent_codes[:2]
-        height, width = dividable(H.n_points)
+        # over write n_points for SR image
+        n_points = H.n_points if n_points is None else n_points
+        height, width = dividable(n_points)
         fg_shape = [H.batch_size, height, width, H.n_steps]
         bound = self.get_bound()
 
         # sample points
         di = torch.linspace(0., 1., steps=H.n_steps).to(H.device)
-        di = repeat(di, 's -> b n s', b=H.batch_size, n=H.n_points)
+        di = repeat(di, 's -> b n s', b=H.batch_size, n=n_points)
         if (H.training and (not H.get('disable_noise', False))) or H.get('force_noise', False):
             di = self.C.add_noise_to_interval(di)
         di_trs = self.C.get_transformed_depth(di)
@@ -882,17 +911,19 @@ class VolumeRenderer(object):
         output.fg_depths   = (di, di_trs)
         return output
 
-    def forward_rendering_background(self, H, output, bg_nerf, nerf_input_cams, latent_codes, styles_bg):
+    def forward_rendering_background(self, H, output, bg_nerf, nerf_input_cams, latent_codes, styles_bg, n_points=None):
         pixels_world, camera_world, _ = nerf_input_cams
         z_shape_bg, z_app_bg = latent_codes[2:]
-        height, width = dividable(H.n_points)
+        # over write n_points for SR images
+        n_points = H.n_points if n_points is None else n_points
+        height, width = dividable(n_points)
         bg_shape = [H.batch_size, height, width, H.n_bg_steps]
         if H.fixed_input_cams is not None:
             pixels_world, camera_world, _ = H.fixed_input_cams
 
         # render background, use NeRF++ inverse sphere parameterization
         di = torch.linspace(-1., 0., steps=H.n_bg_steps).to(H.device)
-        di = repeat(di, 's -> b n s', b=H.batch_size, n=H.n_points) * self.C.bg_start
+        di = repeat(di, 's -> b n s', b=H.batch_size, n=n_points) * self.C.bg_start
         if (H.training and (not H.get('disable_noise', False))) or H.get('force_noise', False):
             di = self.C.add_noise_to_interval(di)
         p_bg, r_bg = self.C.get_evaluation_points_bg(pixels_world, camera_world, -di)
@@ -1047,6 +1078,45 @@ class VolumeRenderer(object):
                 rand_x = rearrange(feat_map[:, vol_len:], 'b (h w) d -> b d h w', h=H.rnd_res)
                 output.rand_out = self.split_feat(rand_x, H.img_channels, split_rgb=split_rgb)
         output.full_out = full_out
+        return output
+
+    def forward_raw(self, pixels, *, fg_nerf, bg_nerf, nerf_input_feats, latent_codes, styles, styles_bg, H, camera_matrices, output):
+        """NOTE: function add by us, this function only forward a single plane, and avoid feature partitation."""
+
+        nerf_input_cams = self.C.get_origin_direction(pixels, camera_matrices)
+
+        # set up an frozen camera for background if necessary
+        if ('freeze_bg' in H.render_option) and (bg_nerf is not None):
+            pitch, yaw = 0.2 + np.pi/2, 0
+            range_u, range_v = self.C.range_u, self.C.range_v
+            u = (yaw - range_u[0])   / (range_u[1] - range_u[0])
+            v = (pitch - range_v[0]) / (range_v[1] - range_v[0])
+            fixed_camera = self.C.get_camera(
+                batch_size=H.batch_size, mode=[u, v, 0.5], device=H.device)
+            H.fixed_input_cams = self.C.get_origin_direction(pixels, fixed_camera)
+        else:
+            H.fixed_input_cams = None
+
+        raw_output = EasyDict()
+        raw_output.feat = []
+        raw_output.full_out = []
+        # standard volume rendering
+        n_points = pixels.size(1)
+        raw_output = self.forward_rendering(
+            H, raw_output, fg_nerf, nerf_input_cams, nerf_input_feats, latent_codes, styles, n_points=n_points)
+
+        raw_output = self.forward_rendering_background(
+            H, raw_output, bg_nerf, nerf_input_cams, latent_codes, styles_bg, n_points=n_points)
+
+        # split sr output
+        sr_res = int(math.sqrt(pixels.size(1)))
+        feat_map = sum(raw_output.feat)
+        full_x    = rearrange(feat_map, 'b (h w) d -> b d h w', h=sr_res)
+        split_rgb = fg_nerf.add_rgb or fg_nerf.predict_rgb
+        full_out = self.split_feat(full_x, H.img_channels, None, split_rgb=split_rgb)
+
+        output.sr_out = full_out
+
         return output
 
     def post_process_outputs(self, outputs, freeze_nerf=False):
@@ -1551,6 +1621,15 @@ class NeRFSynthesisNetwork(torch.nn.Module):
         cam_based_sampler = False,
         rectangular       = None,
         freeze_nerf       = False,
+
+        # NOTE: add by us
+        sub_region_reg = False,
+        cent_range = None,
+        size_range = None,
+
+        super_resolution_reg = False,
+        sr_scale = None,
+
         **block_kwargs,            # Other arguments for SynthesisBlock.
     ):
         assert img_resolution >= 4 and img_resolution & (img_resolution - 1) == 0
@@ -1682,9 +1761,39 @@ class NeRFSynthesisNetwork(torch.nn.Module):
         self.interp_steps = [int(a) for a in interp_steps.split(':')] \
             if interp_steps is not None else None  #TODO two-stage training trick (from EG3d paper, not working so far)
 
+        # NOTE: code add by us,
+        self.sub_region_reg = sub_region_reg
+        self.cent_range = cent_range
+        self.size_range = size_range
+
+        self.super_resolution_reg = super_resolution_reg
+        self.sr_scale = sr_scale
+
     def set_alpha(self, alpha):
         if alpha is not None:
             self.alpha.fill_(alpha)
+
+    def set_cent_range(self, cent_range):
+        if cent_range is not None:
+            self.cent_range = cent_range
+
+    def set_size_range(self, size_range):
+        if size_range is not None:
+            self.size_range = size_range
+
+    def set_SR_scale(self, scale):
+        if scale is not None:
+            self.sr_scale = scale
+
+    @property
+    def SR_started(self):
+        """NOTE: in this function, we assume `resolution_vol` equals to `resolution_start`,
+        and this is absolutly correct in all configs."""
+        if self.sr_scale is None:
+            return False
+        if int(self.sr_scale * self.resolution_start) == self.resolution_start:
+            return False
+        return True
 
     def set_steps(self, steps):
         if hasattr(self, "steps"):
@@ -1694,7 +1803,7 @@ class NeRFSynthesisNetwork(torch.nn.Module):
                 self.steps = steps / 1000.0
 
     def forward(self, ws, **block_kwargs):
-        block_ws, imgs, rand_imgs = [], [], []
+        block_ws, imgs, rand_imgs, sr_imgs = [], [], [], []
         batch_size = block_kwargs['batch_size'] = ws.size(0)
         n_levels, end_l, _, target_res = self.get_current_resolution()
 
@@ -1879,7 +1988,133 @@ class NeRFSynthesisNetwork(torch.nn.Module):
             img = img.masked_fill(mask > 0, -1)
 
         block_kwargs['img'] = img
+        print(img.shape)
         return block_kwargs
+
+    def forward_SR_img(self, ws, n_vis_scale=1, downsample=False, **block_kwargs):
+        """NOTE: code add by us, generate a SR img for regularization"""
+        block_ws, imgs_output = [], []
+        batch_size = block_kwargs['batch_size'] = ws.size(0)
+        n_levels, end_l, _, target_res = self.get_current_resolution()
+
+        # cameras, background codes
+        if "camera_matrices" not in block_kwargs:
+            if 'camera_mode' in block_kwargs:
+                block_kwargs["camera_matrices"] = self.get_camera(batch_size, device=ws.device, mode=block_kwargs["camera_mode"])
+            else:
+                if self.predict_camera:
+                    rand_mode = ws.new_zeros(ws.size(0), 2)
+                    if self.C.gaussian_camera:
+                        rand_mode = rand_mode.normal_()
+                        pred_mode = self.camera_generator(rand_mode)
+                    else:
+                        rand_mode = rand_mode.uniform_()
+                        pred_mode = self.camera_generator(rand_mode - 0.5)
+                    mode = rand_mode if self.alpha <= 0 else rand_mode + pred_mode * 0.1
+                    block_kwargs["camera_matrices"] = self.get_camera(batch_size, device=ws.device, mode=mode)
+                else:
+                    block_kwargs["camera_matrices"] = self.get_camera(batch_size, device=ws.device)
+
+            if ('camera_RT' in block_kwargs) or ('camera_UV' in block_kwargs):
+                camera_matrices = list(block_kwargs["camera_matrices"])
+                camera_mask = torch.rand(batch_size).type_as(camera_matrices[1]).lt(self.alpha)
+                if 'camera_RT' in block_kwargs:
+                    image_RT = block_kwargs['camera_RT'].reshape(-1, 4, 4)
+                    camera_matrices[1][camera_mask] = image_RT[camera_mask]  # replacing with inferred cameras
+                else:  # sample uv instead of sampling the extrinsic matrix
+                    image_UV = block_kwargs['camera_UV']
+                    image_RT = self.get_camera(batch_size, device=ws.device, mode=image_UV, force_uniform=True)[1]
+                    camera_matrices[1][camera_mask] = image_RT[camera_mask]  # replacing with inferred cameras
+                    camera_matrices[2][camera_mask] = image_UV[camera_mask]  # replacing with inferred uvs
+                block_kwargs["camera_matrices"] = tuple(camera_matrices)
+
+        if "latent_codes" not in block_kwargs:
+            block_kwargs["latent_codes"] = self.get_latent_codes(batch_size, device=ws.device)
+
+        # deal with roll in cameras
+        block_kwargs['theta'] = self.C.get_roll(ws, self.training, **block_kwargs)
+
+        # generate features for input points (Optional, default not use)
+        if self.I is not None:
+            ws = ws.to(torch.float32)
+            blocks   = [getattr(self, name) for name in self.input_block_names]
+            block_ws = self.I.forward_ws_split(ws, blocks)
+            nerf_input_feats = self.I.forward_network(blocks, block_ws, **block_kwargs)
+            ws = ws[:, self.I.num_ws:]
+        else:
+            nerf_input_feats = None
+
+        # NOTE: SR should start later than progressive training
+        camera_matrices = block_kwargs["camera_matrices"]
+        vol_resolution  = self.resolution_vol
+        sr_pixels_list = []
+        sr_pixels_num_list = []
+        if n_vis_scale == 1:
+            sr_pixels = self.C.prepare_pixels_SR(vol_resolution, self.sr_scale, camera_matrices)
+            sr_pixels_list.append(sr_pixels)
+            sr_pixels_num_list.append(sr_pixels.size(1))  # [bz, n_points, 2]
+        else:
+            for scale in torch.linspace(1, self.sr_scale, n_vis_scale):
+                sr_pixels = self.C.prepare_pixels_SR(vol_resolution, scale, camera_matrices)
+                sr_pixels_list.append(sr_pixels)
+                sr_pixels_num_list.append(sr_pixels.size(1)) # # [bz, n_points, 2]
+
+        vol_pixels = torch.cat(sr_pixels_list, dim=1)
+
+        if self.fg_nerf.num_ws > 0:  # use style vector instead of latent codes?
+            block_kwargs["styles"] = ws[:, :self.fg_nerf.num_ws]
+            ws = ws[:, self.fg_nerf.num_ws:]
+        if (self.bg_nerf is not None) and self.bg_nerf.num_ws > 0:
+            block_kwargs["styles_bg"] = ws[:, :self.bg_nerf.num_ws]
+            ws = ws[:, self.bg_nerf.num_ws:]
+
+        outputs = self.V.forward_volume_rendering(
+            nerf_modules=(self.fg_nerf, self.bg_nerf),
+            vol_pixels=vol_pixels,
+            nerf_input_feats=nerf_input_feats,
+            return_full=False,
+            alpha=self.alpha,
+            **block_kwargs)
+
+        nerf_feat, nerf_img, _ = self.V.post_process_outputs(outputs['full_out'], self.freeze_nerf)
+
+        if len(sr_pixels_num_list) > 1:
+            import ipdb
+            ipdb.set_trace()
+            nerf_feat = rearrange(nerf_feat, 'b c h w -> b c (h w)')
+            nerf_img = rearrange(nerf_img, 'b c h w -> b c (h w)')
+            nerf_feat_list = torch.split(nerf_feat, sr_pixels_num_list, dim=-1)
+            nerf_img_list = torch.split(nerf_img, sr_pixels_list, dim=-1)
+            nerf_feat_list = [rearrange(x, 'b c (h w) -> b c h w', h=int(math.sqrt(x.size(-1)))) for x in nerf_feat_list]
+            nerf_img_list = [rearrange(img, 'b c (h w) -> b c h w', h=int(math.sqrt(nerf_feat.size(-1)))) for img in nerf_img_list]
+        else:
+            nerf_feat_list = [nerf_feat]
+            nerf_img_list = [nerf_img]
+
+        # 2D feature map upsampling
+        with torch.autograd.profiler.record_function('upsampling'):
+            imgs_curr_res = []  # list to save all images in the current resolution
+            # imgs += [img]
+            ws = ws.to(torch.float32)
+            for nerf_feat, nerf_img in zip(nerf_feat_list, nerf_img_list):
+                imgs_curr_res += [nerf_img]
+                blocks   = [getattr(self, name) for name in self.block_names]
+                block_ws = self.U.forward_ws_split(ws, blocks)
+                imgs_curr_res += self.U.forward_network(blocks, block_ws, nerf_feat, nerf_img, target_res, self.alpha, **block_kwargs)
+
+                # the final output for current sr scale
+                img_output = imgs_curr_res[-1]
+
+                if downsample:
+                    print(img_output.shape)
+                    target_res = self.block_resolutions[end_l-1]
+                    img_output = F.interpolate(img_output, size=(target_res, target_res),
+                                               mode='bilinear', align_corners=False)
+
+                # only save the final output
+                imgs_output += [img_output]
+
+        return imgs_output  # len(imgs_output) == n_vis_scale
 
     def get_current_resolution(self):
         n_levels = len(self.block_resolutions)

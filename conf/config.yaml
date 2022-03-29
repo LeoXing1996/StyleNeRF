@@ -57,3 +57,4 @@ timeout: ~
 slurm: False
 bucket: s3://mmgen-dev/NeRF-GAN/StyleNeRF/
 desc: ~
+n_vis_scale: 3

@@ -1086,6 +1086,27 @@ class Generator(torch.nn.Module):
             return img['img']
         return img
 
+    @property
+    def use_SR(self):
+        return self.synthesis.SR_started
+
+    def forward_SR(self, z=None, c=None, styles=None, truncation_psi=1, truncation_cutoff=None, img=None, **synthesis_kwargs):
+
+        if styles is None:
+            assert z is not None
+            if (self.encoder is not None) and (img is not None):
+                outputs = self.encoder(img)
+                ws = outputs['ws']
+                if ('camera' in outputs) and ('camera_mode' not in synthesis_kwargs):
+                    synthesis_kwargs['camera_RT'] = outputs['camera']
+            else:
+                ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, **synthesis_kwargs)
+        else:
+            ws = styles
+        img = self.synthesis.forward_SR_img(ws, **synthesis_kwargs)
+
+        return img
+
 #----------------------------------------------------------------------------
 
 @persistence.persistent_class
