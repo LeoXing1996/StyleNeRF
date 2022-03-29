@@ -1988,7 +1988,7 @@ class NeRFSynthesisNetwork(torch.nn.Module):
             img = img.masked_fill(mask > 0, -1)
 
         block_kwargs['img'] = img
-        print(img.shape)
+        # print(img.shape)
         return block_kwargs
 
     def forward_SR_img(self, ws, n_vis_scale=1, downsample=False, **block_kwargs):
@@ -2106,7 +2106,7 @@ class NeRFSynthesisNetwork(torch.nn.Module):
                 img_output = imgs_curr_res[-1]
 
                 if downsample:
-                    print(img_output.shape)
+                    # print(img_output.shape)
                     target_res = self.block_resolutions[end_l-1]
                     img_output = F.interpolate(img_output, size=(target_res, target_res),
                                                mode='bilinear', align_corners=False)

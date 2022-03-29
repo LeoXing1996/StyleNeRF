@@ -451,10 +451,8 @@ def training_loop(
 
             # NOTE: code add by us ---> skip SR is necessary
             if loss.skip(phase.name):
-                print(f'skip {phase.name}: {loss.steps}')
                 continue
-            else:
-                print(f'do not skip {phase.name}: {loss.steps}')
+
             if hasattr(phase, 'start'):
                 phase.start = True
 

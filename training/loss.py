@@ -156,7 +156,6 @@ class StyleGAN2Loss(Loss):
                 out = self.G_synthesis.forward_SR_img(ws,
                                                       downsample=True,
                                                       **synthesis_kwargs)
-            print(out[-1].shape)
             return out[-1]
 
         if (generator_mode == 'image_z_random_c') or (generator_mode
@@ -243,10 +242,11 @@ class StyleGAN2Loss(Loss):
 
     def skip(self, phase):
         """NOTE: function add by us, skip the SR loss """
-        if phase == 'Gsr' and not self.G_synthesis.SR_started:
-            return True
         if phase == 'Gsr':
-            print(f'Not skip, scale: {self.G_synthesis.sr_scale}')
+            if hasattr(self.G_synthesis, 'module'):
+                return not self.G_synthesis.module.SR_started
+            else:
+                return not self.G_synthesis.SR_started
         return False
 
     def accumulate_gradients(self,
@@ -343,7 +343,7 @@ class StyleGAN2Loss(Loss):
                     losses['Gpl']) if scaler is not None else losses['Gpl']
                 loss.backward()
 
-        if do_Gsr and self.G_synthesis.SR_started:
+        if do_Gsr:
             with torch.autograd.profiler.record_function('Gsr_forward'):
                 gen_img = self.run_G(gen_z,
                                      gen_c,
