@@ -153,9 +153,13 @@ class StyleGAN2Loss(Loss):
             with misc.ddp_sync(self.G_mapping, sync):
                 ws = self.G_mapping(z, c)
             with misc.ddp_sync(self.G_synthesis, sync):
-                out = self.G_synthesis.forward_SR_img(ws,
-                                                      downsample=True,
-                                                      **synthesis_kwargs)
+                if hasattr(self.G_synthesis, 'module'):
+                    out = self.G_synthesis.module.forward_SR_img(
+                        ws, downsample=True, **synthesis_kwargs)
+                else:
+                    out = self.G_synthesis.forward_SR_img(ws,
+                                                          downsample=True,
+                                                          **synthesis_kwargs)
             return out[-1]
 
         if (generator_mode == 'image_z_random_c') or (generator_mode
