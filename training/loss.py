@@ -55,6 +55,7 @@ class StyleGAN2Loss(Loss):
                  generator_mode='random_z_random_c',
                  sr_curriculum=None,
                  sr_scale_end=2.,
+                 sr_reg_weight=None,
                  G_ema=None):
 
         super().__init__()
@@ -79,6 +80,7 @@ class StyleGAN2Loss(Loss):
         self.sr_curriculum = sr_curriculum
         self.sr_scale_end = sr_scale_end
         self.sr_scale = None
+        self.sr_reg_weight = sr_reg_weight
         self.G_ema = G_ema
 
         self.cycle_consistency = cycle_consistency
@@ -353,7 +355,6 @@ class StyleGAN2Loss(Loss):
                                      gen_c,
                                      sync=(sync and not do_Gpl),
                                      forward_sr=True)
-                reg_loss += self.get_loss(gen_img, 'G')
                 gen_sr_logits = self.run_D(gen_img, gen_c, sync=False)
                 if isinstance(gen_sr_logits, dict):
                     gen_sr_logits = gen_sr_logits['logits']
@@ -365,6 +366,8 @@ class StyleGAN2Loss(Loss):
                     loss_Gsr = loss_Gsr * (
                         1 - self.label_smooth) + torch.nn.functional.softplus(
                             gen_sr_logits) * self.label_smooth
+                if self.sr_reg_weight is not None:
+                    loss_Gsr = loss_Gsr * self.sr_reg_weight
 
                 # handle sr output
                 training_stats.report('Loss/score/fake_sr', gen_sr_logits)
@@ -452,24 +455,6 @@ class StyleGAN2Loss(Loss):
                 loss = scaler.scale(
                     losses['Dr1']) if scaler is not None else losses['Dr1']
                 loss.backward()
-
-        # if do_Dsr:
-        #     with torch.autograd.profiler.record_function('Dsr_forward'):
-        #         gen_img = self.run_G(gen_z, gen_c, sync=False, img=fake_img)[0]
-        #         gen_sr_logits = self.run_D(gen_img, gen_c, sync=False)
-        #         if isinstance(gen_sr_logits, dict):
-        #             gen_sr_logits = gen_sr_logits['logits']
-
-        #         loss_Dsr = torch.nn.functional.softplus(
-        #             gen_sr_logits)  # -log(1 - sigmoid(gen_logits))
-        #         training_stats.report('Loss/scores/fake_sr', gen_sr_logits)
-        #         training_stats.report('Loss/D_sr/loss', loss_Dsr.mean())
-
-        #     with torch.autograd.profiler.record_function('Dsr_backward'):
-        #         losses['Dsr'] = loss_Dsr.mean().mul(gain)
-        #         loss = scaler.scale(
-        #             losses['Dsr']) if scaler is not None else losses['Dsr']
-        #         loss.backward()
 
         return losses
 

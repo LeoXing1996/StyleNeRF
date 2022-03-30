@@ -1090,6 +1090,10 @@ class Generator(torch.nn.Module):
     def use_SR(self):
         return self.synthesis.SR_started
 
+    def set_SR_scale(self, scale):
+        if hasattr(self.synthesis, 'set_SR_scale'):
+            self.synthesis.set_SR_scale(scale)
+
     def forward_SR(self, z=None, c=None, styles=None, truncation_psi=1, truncation_cutoff=None, img=None, **synthesis_kwargs):
 
         if styles is None:

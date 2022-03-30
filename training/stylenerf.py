@@ -2114,6 +2114,17 @@ class NeRFSynthesisNetwork(torch.nn.Module):
                 # only save the final output
                 imgs_output += [img_output]
 
+        # NOTE: just for debug
+        # import ipdb
+        # ipdb.set_trace()
+        # img_vis = img_output  # [bz, n, H, W]
+        # img_vis = img_vis.cpu().detach()
+        # img_vis = rearrange(img_vis, 'b n h w -> b h w n')
+        # img_vis = ((img_vis + 1) / 2 * 255.).clamp(0, 255).numpy().astype(np.uint8)
+        # for idx in range(img_vis.shape[0]):
+        #     from PIL import Image
+        #     Image.fromarray(img_vis[idx]).save(f'{idx}.png')
+
         return imgs_output  # len(imgs_output) == n_vis_scale
 
     def get_current_resolution(self):

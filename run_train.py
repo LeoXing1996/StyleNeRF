@@ -260,7 +260,7 @@ def setup_training_loop_kwargs(cfg):
         desc += f'-resume{cfg.resume}'
         args.resume_pkl = resume_specs[cfg.resume]  # predefined url
     else:
-        desc += '-resumecustom'
+        # desc += '-resumecustom'  # do not add this dummy flag
         args.resume_pkl = cfg.resume  # custom path or url
 
     if cfg.resume != 'noresume':
@@ -377,6 +377,13 @@ def main(cfg: DictConfig):
             args.resume_pkl = pkls[-1]
             args.resume_start = int(args.resume_pkl.split('-')[-1][:-4]) * 1000
         else:
+            args.resume_start = 0
+
+    # try to get resume start from pkl file
+    if hasattr(args, 'resume_pkl') and args.resume_pkl is not None:
+        try:
+            args.resume_start = int(args.resume_pkl.split('-')[-1][:-4]) * 1000
+        except Exception:
             args.resume_start = 0
 
     # Print options.
