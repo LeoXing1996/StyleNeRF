@@ -30,3 +30,5 @@ runs/
 ckpt/
 render_out/
 render_out
+modelzoo/
+modelzoo
