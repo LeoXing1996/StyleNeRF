@@ -333,7 +333,8 @@ def training_loop(
             if slurm:
                 from pavi import SummaryWriter as Writer
                 proj_name = run_dir.split('/')[-1]
-                stats_tfevents = Writer(proj_name, project='NeRF-GANs')
+                stats_tfevents = Writer(f'StyleNeRF-{proj_name}',
+                                        project='NeRF-GANs')
                 from mmcv.fileio import FileClient
                 # petrel_mapping from args is an `omega dict config`
                 petrel_mapping = dict(petrel_mapping)
