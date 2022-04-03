@@ -5,6 +5,6 @@ SPEC=paper256
 MODEL=stylenerf_ffhq_fullSR_scale2
 DESC=-resume-5040-FULLSR-scale2-w1e-1
 PYTHON_ARGS=(
-    "resume=out/modelzoo/NeRF-GAN_StyleNeRF_00000--paper256-stylenerf_ffhq-noaug-FULLSR-scale2_network-snapshot-005040.pkl"
-    "model.loss_kwargs.sr_reg_weight=1e-2"
+    'resume=modelzoo/StyleNeRF-FFHQ-256-Baseline-005040.pkl'
+    'model.loss_kwargs.sr_reg_weight=1e-2'
 )
