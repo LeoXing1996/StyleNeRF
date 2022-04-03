@@ -400,6 +400,7 @@ def training_loop(
     if progress_fn is not None:
         progress_fn(0, total_kimg)
 
+    best_fid, best_pickle_name = float('inf'), None
     while True:
         # set number of images
         loss.set_alpha(cur_nimg)
@@ -716,6 +717,44 @@ def training_loop(
                                               run_dir=run_dir,
                                               snapshot_pkl=snapshot_pkl)
                 stats_metrics.update(result_dict.results)
+
+                if 'fid50k_full' in result_dict.results:
+                    if result_dict.results.fid50k_full < best_fid:
+                        best_fid = result_dict.results.fid50k_full
+                        best_pickle_name_new = (f'network-bestFID-{best_fid}-'
+                                                f'{cur_nimg//1000:06d}.pkl')
+                        best_snapshot_pkl = os.path.join(run_dir,
+                                                         best_pickle_name_new)
+
+                        if client is not None:
+                            # 1. remove last best pickle
+                            if best_pickle_name:
+                                client.remove(
+                                    os.path.join(run_dir,
+                                                 best_pickle_name))
+                            # 2. update name and save new one
+                            with io.BytesIO() as f:
+                                pickle.dump(snapshot_data, f)
+                                client.put(f.getvalue(), best_snapshot_pkl)
+                        else:
+                            # 1. remove last best pickle
+                            if best_pickle_name:
+                                os.remove(os.path.join(run_dir,
+                                                       best_pickle_name))
+                            # 2. save new one
+                            with open(best_snapshot_pkl, 'wb') as f:
+                                pickle.dump(snapshot_data, f)
+                        best_pickle_name = best_pickle_name_new
+
+                # let's upload the logs to ceph~
+                if client is not None:
+                    log_suffix = ('.txt', '.jsonl', 'yaml')
+                    for filename in os.scandir(run_dir, log_suffix, True):
+                        local_path = os.path.join(run_dir, filename)
+                        # ceph_path = client.join_path(run_dir, filename)
+                        with open(filename, 'r') as file:
+                            client.put_text(file.read(), local_path)
+
         del snapshot_data  # conserve memory
 
         # Collect statistics.
