@@ -747,7 +747,7 @@ def training_loop(
                         best_pickle_name = best_pickle_name_new
 
                 # let's upload the logs to ceph~
-                if client is not None:
+                if rank == 0 and client is not None:
                     log_suffix = ('.txt', '.jsonl', 'yaml')
                     for filename in os.scandir(run_dir, log_suffix, True):
                         local_path = os.path.join(run_dir, filename)
