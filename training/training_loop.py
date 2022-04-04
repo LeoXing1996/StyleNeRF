@@ -718,7 +718,7 @@ def training_loop(
                                               snapshot_pkl=snapshot_pkl)
                 stats_metrics.update(result_dict.results)
 
-                if 'fid50k_full' in result_dict.results:
+                if 'fid50k_full' in result_dict.results and rank == 0:
                     if result_dict.results.fid50k_full < best_fid:
                         best_fid = result_dict.results.fid50k_full
                         best_pickle_name_new = (f'network-bestFID-{best_fid}-'
