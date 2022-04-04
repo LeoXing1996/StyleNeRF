@@ -749,9 +749,13 @@ def training_loop(
                 # let's upload the logs to ceph~
                 if rank == 0 and client is not None:
                     log_suffix = ('.txt', '.jsonl', 'yaml')
-                    for filename in os.scandir(run_dir, log_suffix, True):
+                    for entry in os.scandir(run_dir):
+                        if not entry.is_file():
+                            continue
+                        filename = entry.path
+                        if not filename.endswith(log_suffix):
+                            continue
                         local_path = os.path.join(run_dir, filename)
-                        # ceph_path = client.join_path(run_dir, filename)
                         with open(filename, 'r') as file:
                             client.put_text(file.read(), local_path)
 
