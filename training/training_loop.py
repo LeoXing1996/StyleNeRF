@@ -752,11 +752,10 @@ def training_loop(
                     for entry in os.scandir(run_dir):
                         if not entry.is_file():
                             continue
-                        filename = entry.path
-                        if not filename.endswith(log_suffix):
+                        local_path = entry.path
+                        if not local_path.endswith(log_suffix):
                             continue
-                        local_path = os.path.join(run_dir, filename)
-                        with open(filename, 'r') as file:
+                        with open(local_path, 'r') as file:
                             client.put_text(file.read(), local_path)
 
         del snapshot_data  # conserve memory
