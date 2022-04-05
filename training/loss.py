@@ -55,7 +55,10 @@ class StyleGAN2Loss(Loss):
                  generator_mode='random_z_random_c',
                  sr_curriculum=None,
                  sr_scale_end=2.,
+                 sr_reg=None,
                  sr_reg_weight=None,
+                 sr_consist=None,
+                 sr_consist_weight=None,
                  G_ema=None):
 
         super().__init__()
@@ -80,7 +83,10 @@ class StyleGAN2Loss(Loss):
         self.sr_curriculum = sr_curriculum
         self.sr_scale_end = sr_scale_end
         self.sr_scale = None
+        self.sr_reg = sr_reg
         self.sr_reg_weight = sr_reg_weight
+        self.sr_consist = sr_consist
+        self.sr_consist_weight = sr_consist_weight
         self.G_ema = G_ema
 
         self.cycle_consistency = cycle_consistency
@@ -355,22 +361,48 @@ class StyleGAN2Loss(Loss):
                                      gen_c,
                                      sync=(sync and not do_Gpl),
                                      forward_sr=True)
-                gen_sr_logits = self.run_D(gen_img, gen_c, sync=False)
-                if isinstance(gen_sr_logits, dict):
-                    gen_sr_logits = gen_sr_logits['logits']
 
-                loss_Gsr = torch.nn.functional.softplus(
-                    -gen_sr_logits)  # -log(sigmoid(gen_logits))
+                if self.sr_reg:  # pass sr img to disc
+                    gen_sr_logits = self.run_D(gen_img, gen_c, sync=False)
+                    if isinstance(gen_sr_logits, dict):
+                        gen_sr_logits = gen_sr_logits['logits']
 
-                if self.label_smooth > 0:
-                    loss_Gsr = loss_Gsr * (
-                        1 - self.label_smooth) + torch.nn.functional.softplus(
-                            gen_sr_logits) * self.label_smooth
-                if self.sr_reg_weight is not None:
-                    loss_Gsr = loss_Gsr * self.sr_reg_weight
+                    loss_sr_reg = torch.nn.functional.softplus(
+                        -gen_sr_logits)  # -log(sigmoid(gen_logits))
 
+                    if self.label_smooth > 0:
+                        loss_sr_reg = loss_sr_reg * (
+                            1 - self.label_smooth) + \
+                                torch.nn.functional.softplus(
+                                    gen_sr_logits) * self.label_smooth
+
+                    if self.sr_reg_weight is not None:
+                        loss_sr_reg = loss_sr_reg * self.sr_reg_weight
+
+                    training_stats.report('Loss/score/fake_sr', gen_sr_logits)
+                    training_stats.report('Loss/G/fake_sr_reg', loss_sr_reg)
+                else:
+                    loss_sr_reg = 0
+
+                if self.sr_consist:  # calculate consistency
+                    with torch.no_grad():
+                        gen_img_norm, _ = self.run_G(gen_z,
+                                                     gen_c,
+                                                     sync=(sync
+                                                           and not do_Gpl),
+                                                     forward_sr=False)
+                        gen_img_norm = gen_img_norm['img']
+                    loss_sr_consit = F.mse_loss(gen_img, gen_img_norm)
+                    if self.sr_consist_weight is not None:
+                        loss_sr_consit = loss_sr_consit * \
+                            self.sr_consist_weight
+                    training_stats.report('Loss/G/fake_sr_consistency',
+                                          loss_sr_consit)
+                else:
+                    loss_sr_consit = 0
+
+                loss_Gsr = loss_sr_reg + loss_sr_consit
                 # handle sr output
-                training_stats.report('Loss/score/fake_sr', gen_sr_logits)
                 training_stats.report('Loss/G/loss_sr', loss_Gsr)
 
             with torch.autograd.profiler.record_function('Gsr_backward'):
